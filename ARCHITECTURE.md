@@ -45,6 +45,36 @@ OSes, not all containers), plus a **DHCP reservation by MAC** on the router if a
 * HTTP is not parsed, so the API cannot see the real client IP (no `X-Forwarded-For`); optional later via a minimal
   header injector on the PC. Authentication is the API's own (bearer key); the allow-list limits who on B can connect.
 
+## Node network connectivity (DHCP station, hotspot fallback)
+
+```
+BOOT -> creds in NVS? -no-> HOTSPOT
+          | yes
+        STA connect (DHCP) --ok--> ONLINE (STA)
+          | fail / no AP seen for 30 s
+        HOTSPOT (AP+STA): AP up, STA keeps retrying in the background
+          | STA gets an IP and no hotspot client is connected
+        ONLINE (STA), AP shut down
+```
+
+* **Normal mode**: Wi-Fi station, IP by DHCP from network B, mDNS name `tether-XXXX.local` (XXXX = last MAC bytes).
+  Saved networks: up to 4 in NVS; scan, join the strongest known one.
+* **Fallback hotspot**: SSID `tether-XXXX`, **WPA2 with a per-device password** (open would expose the API). The node
+  runs a DHCP server on the AP side (`10.42.77.1/24`, unusual on purpose; re-addressed if the STA network collides with it).
+  The **listeners work on the hotspot too**: a client that joins it reaches the API exactly as on a normal network, so it
+  doubles as a standalone mode when no infrastructure exists.
+* **Provisioning**: primary path is `WIFI_SET` from `tether-host` over the serial link (no web page needed). A tiny web
+  page on the hotspot is optional, later.
+* **Radio limits (single radio)**: while the hotspot is up the AP follows the STA's channel, and background STA scans briefly
+  disturb hotspot clients. So retries run every 60 s, and not at all while a hotspot client is mid-session (timer paused until idle).
+* **Reconnect**: backoff 1, 2, 4 ... 60 s. Listeners bind to any address, so a changed IP or a switch between STA and
+  hotspot needs no re-listen; established connections do reset. Power save is off (`WIFI_PS_NONE`) for streaming latency.
+* **Policy knobs** (sent by the host, stored in NVS): fallback delay (30 s), `hotspot = auto|always|never`,
+  hotspot password, country code (e.g. DE, for channels 1-13).
+* **Allow-list** applies on both interfaces (the hotspot is protected by its password; STA by CIDR list).
+* **Status** (`WIFI_STATUS`): mode, SSID, IP, RSSI, hotspot client count, so `tether-host status` shows where to connect.
+* Limits: 2.4 GHz only; no WPA2-Enterprise/captive portals in v1; hidden SSIDs need the name saved explicitly.
+
 ## Wire protocol (implemented and tested in `tether-host/tether_host/protocol.py`)
 `COBS(type | flags | chan u16 | payload<=1024 | crc32) 0x00`, resync at every 0x00. Used here: HELLO, PING/PONG,
 WIFI_SET/WIFI_STATUS, LISTEN (set up a listener), ACCEPT, DATA, CREDIT (per-channel flow control, 8 KiB window), CLOSE.
