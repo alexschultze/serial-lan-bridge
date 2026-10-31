@@ -1,12 +1,47 @@
 # Serial gateway, rev 5: Wi-Fi clients reach an HTTP API on the bridge PC's network
 
 ```
- Network B (Wi-Fi)                ESP32-S3                          BRIDGE PC (Windows 11)                Network A
-┌───────────────────┐ HTTP  ┌───────────────────┐ USB CDC-ACM ┌──────────────────────────┐  HTTP   ┌──────────────┐
-│ OpenAI-style      │──────►│ TCP listener(s)   │◄─ COM port ►│ Python: mux, flow ctl,   │────────►│ API server   │
-│ clients           │◄──────│ :8000 (+ mDNS)    │ inbox usbser│ connects to API target   │◄────────│ (plain http) │
-└───────────────────┘       └───────────────────┘             └──────────────────────────┘         └──────────────┘
- sees: ESP32 IP (DHCP)       Windows sees: one COM port only                              API sees: the PC as client
+   WI-FI SIDE                                                      PC SIDE
+   (network B)                                                     (network A)
+
+  ┌────────────┐                                                 ┌────────────┐
+  │  Clients   │                                                 │ API server │
+  │  (SDKs,    │                                                 │ plain HTTP │
+  │   curl)    │                                                 │ 10.0.0.5   │
+  └─────┬──────┘                                                 └─────▲──────┘
+        │                                                              │
+        │ HTTP                                                    HTTP │
+        │ over Wi-Fi                                                   │
+        │                                                              │
+  ┌─────▼──────┐        USB cable          ┌───────────────────────────┴──┐
+  │            │   one COM port, no driver │                              │
+  │   TETHER   │◄═════════════════════════►│   TETHER-HOST                │
+  │   NODE     │   multiplexed frames      │   Python on Windows 11       │
+  │            │                           │                              │
+  │  ESP32-S3  │◄──── config (TOML) ───────│   tether.toml                │
+  │  firmware  │      pushed at every      │   (Wi-Fi, hotspot,           │
+  └────────────┘      start                │    port -> target)           │
+                                           └──────────────────────────────┘
+```
+
+Flow:
+
+```
+  Client ─► Node:8000 ─► USB ─► Host ─► API
+  Client ◄─ Node ◄───── USB ◄─ Host ◄─ API      (streaming passes straight through)
+```
+
+What each side sees:
+
+```
+  Wi-Fi network  ->  sees only the node          PC network  ->  sees only the PC
+```
+
+Fallback:
+
+```
+  Known Wi-Fi found ──► join it (DHCP)
+  Not found, hotspot configured ──► node starts its own hotspot "tether"
 ```
 
 ## Direction and NAT semantics
