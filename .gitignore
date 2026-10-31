@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+.pio/
+*.egg-info/

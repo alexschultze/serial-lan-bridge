@@ -1,0 +1,8 @@
+set(TC_SRCS src/tc_proto.c src/tc_json.c src/tc_config.c src/tc_engine.c)
+if(ESP_PLATFORM)
+    idf_component_register(SRCS ${TC_SRCS} INCLUDE_DIRS include)
+else()
+    add_library(tether_core STATIC ${TC_SRCS})
+    target_include_directories(tether_core PUBLIC include)
+    target_compile_options(tether_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
