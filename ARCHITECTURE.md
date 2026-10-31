@@ -30,11 +30,11 @@ Its address is whatever network B's DHCP assigns. Make it findable: **mDNS** nam
 OSes, not all containers), plus a **DHCP reservation by MAC** on the router if available. Python `status` shows the current IP.
 
 ## Components
-* **Firmware (ESP-IDF)**: TinyUSB CDC-ACM only; Wi-Fi STA with credentials in NVS; N listeners configured by the PC
+* **tether-node: firmware (ESP-IDF, `tether-node/`)**: TinyUSB CDC-ACM only; Wi-Fi STA with credentials in NVS; N listeners configured by the PC
   at connect time; channel table with credit windows; mDNS; source allow-list (CIDR) enforced before accepting;
   host-silence watchdog (close everything, keep listening state so clients get immediate refusals, not hangs).
-* **Python (3.10+, `pip install pyserial`, asyncio)**: serial link with auto-reconnect, framing/mux, listener config
-  (`--listen 8000=http://10.0.0.5:8000`), Wi-Fi provisioning, status/log. The API itself needs no change.
+* **tether-host: Python (`tether-host/`, 3.10+, `pip install pyserial`, asyncio)**: serial link with auto-reconnect, framing/mux, listener config
+  (`tether-host --listen 8000=http://10.0.0.5:8000`), Wi-Fi provisioning, status/log. The API itself needs no change.
 
 ## Properties for the OpenAI-style workload
 * Long first-token latency is fine: no idle timeout on established connections; TCP keepalive on Wi-Fi sockets,
@@ -45,7 +45,7 @@ OSes, not all containers), plus a **DHCP reservation by MAC** on the router if a
 * HTTP is not parsed, so the API cannot see the real client IP (no `X-Forwarded-For`); optional later via a minimal
   header injector on the PC. Authentication is the API's own (bearer key); the allow-list limits who on B can connect.
 
-## Wire protocol (implemented and tested in `host/serialbridge/protocol.py`)
+## Wire protocol (implemented and tested in `tether-host/tether_host/protocol.py`)
 `COBS(type | flags | chan u16 | payload<=1024 | crc32) 0x00`, resync at every 0x00. Used here: HELLO, PING/PONG,
 WIFI_SET/WIFI_STATUS, LISTEN (set up a listener), ACCEPT, DATA, CREDIT (per-channel flow control, 8 KiB window), CLOSE.
 OPEN_TCP/OPEN_UDP/RESOLVE/DGRAM stay reserved for later outbound/UDP use.

@@ -2,8 +2,8 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
-from serialbridge.protocol import Deframer, Frame, T, cobs_decode, cobs_encode, encode  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tether_host.protocol import Deframer, Frame, T, cobs_decode, cobs_encode, encode  # noqa: E402
 
 
 class Protocol(unittest.TestCase):
