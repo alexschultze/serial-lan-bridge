@@ -1,6 +1,7 @@
 # Architecture and specification
 
-Status: design complete for v1, implementation of the protocol framing only (see README). This document is the
+Status: v1 implemented and tested without hardware (Python host, portable C node core, Linux simulator); the ESP32 glue
+(USB, Wi-Fi) is written but not yet run on a board (see README). This document is the
 single source of truth; where code and text disagree, fix one of them. Items marked **(verify)** depend on
 vendor behaviour that must be confirmed during implementation.
 
@@ -88,22 +89,25 @@ serial-lan-bridge/
 ├── tether.example.toml          annotated example configuration
 ├── testvectors/                 frames.json (shared by Python and C tests), make_vectors.py
 ├── tether-host/                 Python 3.11+, depends on pyserial only
-│   ├── pyproject.toml           (to do) entry point `tether-host`, `python -m tether_host`
+│   ├── pyproject.toml           entry point `tether-host`, `python -m tether_host`
 │   ├── tether_host/
-│   │   ├── protocol.py          done: framing and payload helpers (reference implementation)
-│   │   ├── config.py            to do: load/validate TOML, build node CONFIG JSON
-│   │   ├── link.py              to do: Transport (serial + loopback), reader/writer threads, reconnect
-│   │   ├── session.py           to do: handshake, PING/PONG, CONFIG push, STATUS, channel table
-│   │   ├── bridge.py            to do: per-channel pipe to the target, flow control, 502/504
-│   │   └── cli.py               to do: run | status | ports | check-config | bootloader
-│   └── tests/                   unit tests; fake_node.py (to do) for end-to-end tests without hardware
+│   │   ├── protocol.py          framing and payload helpers (reference implementation)
+│   │   ├── config.py            load/validate TOML, build the node CONFIG JSON
+│   │   ├── link.py              Transport: pyserial (reader/writer threads) and in-memory loopback; port discovery
+│   │   ├── session.py           handshake, PING/PONG, CONFIG push, STATUS, channel table, reconnect
+│   │   ├── bridge.py            per-channel pipe to the target, flow control, half-close, 502/504
+│   │   └── cli.py               run | status | ports | check-config | bootloader
+│   └── tests/                   protocol, fake_node.py + test_e2e.py (Python node), test_sim_e2e.py (C engine)
 └── tether-node/                 ESP-IDF 5.x project (C)
-    ├── CMakeLists.txt, sdkconfig.defaults, partitions.csv
-    ├── components/tether_proto/ portable C: COBS, CRC, deframer, channel/credit logic (builds on the IDF `linux` target for tests)
-    └── main/                    usb_link, wifi_mgr, listeners, channels, status, config
+    ├── CMakeLists.txt, sdkconfig.defaults
+    ├── components/tether_core/  portable C without ESP-IDF dependencies: tc_proto (COBS, CRC, deframer),
+    │                            tc_json, tc_config (parse/validate), tc_engine (listeners, channels, flow control, control protocol)
+    ├── main/                    ESP32 glue: usb_link (TinyUSB CDC-ACM), wifi_mgr (station/hotspot/mDNS), platform_esp, app_main
+    ├── sim/                     Linux simulator: the same engine behind a pseudo-terminal; Makefile for tests and simulator
+    └── tests/test_core.c        C unit tests
 ```
 
-Boundaries: `tether_proto` (node) and `protocol.py` (host) are the only code that knows the byte format, and both
+Boundaries: `tc_proto` (node) and `protocol.py` (host) are the only code that knows the byte format, and both
 are tested against `testvectors/frames.json`.
 
 ## 4. Wire protocol
@@ -234,7 +238,8 @@ retrying on reconnect.
 * Credit is per channel and per direction, in bytes; a sender may transmit DATA only while its credit is positive and
   never more than the credit. Initial credit equals `link.window` (default 4096, range 1024 to 16384).
 * A receiver returns credit with `CREDIT(n)` after it has *consumed* (written to its socket) at least `window / 2`
-  bytes since the last grant, and always when a channel went idle with outstanding unreturned credit.
+  bytes since the last grant. (Because the threshold is half the window, a sender can never be stuck with zero credit while
+  unreturned credit exists, so no idle-time grant is needed.)
 * A sender never reads from its socket while its credit is zero (the kernel buffer and TCP then back-pressure the
   peer). Sending more DATA than credit allows is a protocol error: `CLOSE(PROTO)`.
 * Sizing: the window bounds node RAM (16 channels × 4 KiB × the host→node direction ≈ 64 KiB worst case) and, with
@@ -268,14 +273,12 @@ ESP-IDF 5.x (C), `idf.py`; components `esp_tinyusb` (managed component), `esp_wi
 
 | Task | Role |
 |---|---|
-| `usb_rx` | reads CDC bytes, runs the deframer, hands decoded frames to the `net` task through a queue + wake-up fd |
-| `link_tx` | sole writer to CDC: drains one frame queue (DATA, CREDIT, ACCEPT, CLOSE, control), so frames never interleave; detects stalls (4.8) |
-| `net` | owns the channel table, listeners and sockets in one `select()` loop (no locks); applies the credit rules; emits frames to `link_tx` |
-| `wifi_mgr` | state machine of section 7; event handlers only post events, work happens in this task |
-| `timer` | 2 s/5 s housekeeping: status, watchdog, never-used/linger timeouts |
+| TinyUSB task / `rx_cb` | copies received CDC bytes into a stream buffer and signals an eventfd that the `net` task selects on |
+| `net` | the engine (`tc_engine_poll`): one `select()` loop over the eventfd, listeners and channel sockets; owns the channel table (no locks); parses frames, applies the credit rules, runs the timers; it is also the only writer to CDC, so frames never interleave, and a write that makes no progress for 5 s counts as a stall (4.8) |
+| `wifi_mgr` | state machine of section 7 (500 ms tick); event handlers only update flags |
 
-Per channel: socket fd, `peer`, `credit_out` (what the node may still send to the host), `credit_in` (outstanding
-grant), a ring buffer of `window` bytes for host→node data awaiting `send()`, flags `eof_sent`, `eof_recv`,
+Per channel: socket fd, `credit_out` (what the node may still send to the host), `rx_out` (what the host may still send),
+`consumed` (written to the socket since the last grant), a ring buffer of `window` bytes for host→node data awaiting `send()`, flags `eof_sent`, `eof_recv`,
 timestamps. Client sockets use non-blocking mode, `TCP_NODELAY`, keepalive (idle 60 s, interval 10 s, 3 probes).
 
 ### 5.3 Behaviour rules
@@ -435,15 +438,15 @@ Runs as a normal user (no admin rights, no drivers). Works on Windows 11 and Lin
 
 * **Transport** abstraction with a serial implementation and an in-memory loopback implementation. Real code and
   tests use the same session logic.
-* **Serial transport:** discovery through `serial.tools.list_ports` (match product `tether-node*` and VID `0x303A`, or the
-  configured port/serial number; several matches and no selector is an error that lists them). A reader thread
+* **Serial transport:** discovery through `serial.tools.list_ports` (VID `0x303A`, not the ROM bootloader PID `0x1001`, and product containing `tether` or PID `0x4001`; or the
+  configured port; optionally filtered by USB serial number; several matches and no selector is an error that lists them). A reader thread
   (`read(max(1, in_waiting))`, short timeout) pushes bytes to the event loop; a writer thread drains an outbound queue
   (so asyncio never blocks on the COM port). Receive/transmit buffers are enlarged (`set_buffer_size`) on Windows. DTR/RTS stay at their defaults.
 * **Session** (asyncio): handshake and watchdogs of 4.4, CONFIG push and result handling, STATUS cache, PING loop, channel table.
 * **Bridge:** per ACCEPTed channel, `asyncio.open_connection(target)` with the connect timeout; two pump tasks move data
   between the stream and DATA frames according to 4.6/4.7; writes use `drain()` for backpressure; outbound frames from all
-  channels pass through one queue so fairness is round-robin per frame (no channel can starve the others).
-* **CLI:** `tether-host run [--config FILE]`, `status` (queries the running instance's cached STATUS, or opens the port briefly if none), `ports` (lists candidate COM ports), `check-config`, `bootloader` (REBOOT mode 1, for re-flashing), `--log-level`.
+  channels pass through one write queue; each pump emits one frame per read, so channels interleave at frame granularity.
+* **CLI:** `tether-host run [--config FILE]`, `status` (reads `status.json`, written by the running instance on every STATUS, in `%LOCALAPPDATA%\\tether` or `~/.local/state/tether`; reports stale data when older than 15 s; the COM port is exclusive, so it is never opened a second time), `ports` (lists candidate COM ports), `check-config`, `bootloader` (REBOOT mode 1, for re-flashing), `--log-level`.
 * **Logging:** to stderr; node `LOG` frames appear with a `node:` prefix; one INFO line per connection (listener, peer, bytes, duration).
 
 ### 8.3 Running on Windows
@@ -486,10 +489,11 @@ In-flight streaming responses cannot be resumed after a fault; clients retry.
 
 | Level | What | Where |
 |---|---|---|
-| Unit (Python) | framing, payload helpers, config validation, flow-control counters | `tether-host/tests`, `python -m unittest` |
-| Shared vectors | Python and C decode/encode identical bytes | `testvectors/frames.json`, regenerate with `make_vectors.py` only with a protocol version bump |
-| Unit (C) | COBS, CRC, deframer, channel/credit state machine on the IDF `linux` target or plain host compiler | `tether-node/components/tether_proto` tests |
-| End-to-end without hardware | host session against `fake_node.py` (a node implemented in Python over the loopback transport, real TCP sockets for clients and a dummy streaming API) | CI |
+| Unit (Python) | framing, payload helpers, chunked CONFIG | `tether-host/tests/test_protocol.py` |
+| Shared vectors | Python and C decode and re-encode identical bytes | `testvectors/frames.json`; `make_vectors.py` only with a protocol version bump |
+| Unit (C) | CRC, COBS, deframer faults, JSON, config validation, vectors; built with ASan/UBSan | `make -C tether-node/sim test` |
+| Host against a Python node | streaming without buffering, 1.5 MB round trip, half-close, 502, 503 at 17 connections, node reset, framing fault, silent node | `tether-host/tests/test_e2e.py` with `fake_node.py` |
+| Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config | `tether-host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
 | Hardware | checklist below | a board plus the bridge PC |
 
 Hardware acceptance checklist: (1) fresh Windows 11 without added drivers: board enumerates as one COM port, "USB Serial Device",
@@ -499,8 +503,8 @@ during a stream: recovery without restarting the host; (7) host killed: node ans
 off then on: reconnect; (9) unknown SSID and `[hotspot]` set: hotspot appears after `fallback`, client reaches the API through it;
 (10) 24 h soak with periodic requests: no heap growth in STATUS.
 
-CI (GitHub Actions): Python tests; the ESP-IDF container builds `tether-node` and the C tests; the firmware image is
-uploaded as an artifact.
+CI (`.github/workflows/ci.yml`): Python and C tests on Linux; a second job builds the firmware with ESP-IDF and uploads the
+image as an artifact.
 
 ## 12. Build, flash and operate
 
@@ -543,12 +547,15 @@ uploaded as an artifact.
 3. Real USB CDC throughput with `pyserial` on Windows 11 (target ≥ 0.8 MB/s) and the best CDC buffer sizes.
 4. Software reset into ROM download mode on the S3 (REBOOT mode 1) from running TinyUSB firmware.
 5. AP+STA behaviour (channel following, scan interruptions) with real access points.
-6. ESP-ROM CRC-32 function matches `zlib.crc32` (test vectors will show).
+6. The node uses its own CRC-32 (`tc_crc32`, verified against the vectors), so no ESP-ROM function is needed.
+7. The ESP32 glue (`usb_link.c`, `wifi_mgr.c`, `platform_esp.c`) follows the esp_tinyusb 1.x and ESP-IDF 5.x APIs from documentation;
+   it must be compiled and run on a board before it can be called verified.
 
 ## 15. Roadmap
 
 1. Done: framing, payload helpers, shared test vectors, unit tests.
-2. Host: config loader and validation, Transport (serial + loopback), session (handshake, watchdogs), bridge (pumps, flow control), CLI, `fake_node.py`, end-to-end tests.
-3. Node: project skeleton and CI build, USB CDC + framing, Wi-Fi manager, listeners and channels, config apply, STATUS/LOG, mDNS.
-4. Integration on hardware with the checklist of section 11.
-5. Later: UDP, `reload`, TLS option, X-Forwarded-For injection, Windows service wrapper, OTA via the host.
+2. Done: tether-host (config, transports, session, bridge, CLI) with end-to-end tests against a Python node and the C engine.
+3. Done: portable node core in C (protocol, JSON, config, engine) with unit tests and the Linux simulator.
+4. Written, build and run to be confirmed: ESP32 glue (USB CDC, Wi-Fi station/hotspot/mDNS, platform hooks).
+5. Integration on hardware with the checklist of section 11.
+6. Later: UDP, `reload`, TLS option, X-Forwarded-For injection, Windows service wrapper, OTA via the host.

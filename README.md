@@ -25,12 +25,14 @@ Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](AR
 
 | Part | State |
 |---|---|
-| Wire protocol (framing, message payloads), shared test vectors, unit tests | **done** (`tether-host/tether_host/protocol.py`, `testvectors/`) |
-| tether-host (config, serial link, session, bridge, CLI) | planned, specified in ARCHITECTURE.md sections 6 and 8 |
-| tether-node firmware | planned, specified in sections 5 and 7 |
-| Hardware acceptance tests | planned, section 11 |
+| Wire protocol, shared byte-exact test vectors | done, tested in Python and C |
+| **tether-host** (config, serial link with reconnect, session, bridge channels, CLI) | done, tested against a Python node and against the real C engine over a pseudo-terminal |
+| **tether-node** portable core (framing, JSON, config validation, listeners, channels, flow control, control protocol) | done, C unit tests under ASan/UBSan, plus a Linux simulator that runs the same engine |
+| **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | written; see below for what has been compiled |
+| Hardware acceptance tests (ARCHITECTURE.md section 11) | not yet run: they need a board and the Windows PC |
 
-The commands below describe the intended interface; only the tests run today.
+Tests today: 32 Python tests, 193 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
+USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
 
 ## Requirements
 
@@ -40,29 +42,32 @@ The commands below describe the intended interface; only the tests run today.
 * Network B with DHCP and WPA2/WPA3 (2.4 GHz). The API reachable from the PC.
 * To build the firmware: ESP-IDF 5.x on Linux or Windows.
 
-## Quick start (target workflow)
+## Quick start
 
 1. **Flash the node** (once; Linux or Windows):
    ```
    cd tether-node
    idf.py set-target esp32s3
    idf.py build
-   # put the board in download mode (hold BOOT while plugging in), then:
+   # put the board in download mode (hold BOOT while plugging in the USB cable), then:
    idf.py -p <port> flash
    ```
-2. **Configure**: copy `tether.example.toml` to `tether.toml` and set the Wi-Fi network, the hotspot (optional) and the
-   listeners (`port` on the node, `target` of the API).
+2. **Configure**: copy `tether.example.toml` to `tether.toml`; set the Wi-Fi network, the optional hotspot and the
+   listeners (`port` opened on the node, `target` = the API as seen from the PC).
 3. **Run on the PC**:
    ```
    pip install ./tether-host
    tether-host check-config --config tether.toml
    tether-host run --config tether.toml
    ```
-4. **Use it**: from a Wi-Fi client, point the API base URL at the node, for example
-   `http://tether-a1b2.local:8000/v1` (the name and current IP are shown by `tether-host status`).
+4. **Use it**: from a Wi-Fi client, set the API base URL to the node, for example `http://tether-a1b2.local:8000/v1`
+   (`tether-host status` shows the name and the current IP address).
 
-Other commands: `tether-host ports` (list serial ports), `tether-host status`, `tether-host bootloader` (reboot the node
-into download mode for re-flashing).
+Other commands: `tether-host ports` (lists serial ports and marks tether nodes), `tether-host status`,
+`tether-host bootloader` (restarts the node into download mode for re-flashing).
+
+**Try it without hardware** (Linux/macOS): `make -C tether-node/sim` builds a simulated node; it prints a pseudo-terminal path
+(`PTY /dev/pts/N`) that you can set as `host.port` in the config.
 
 ## Configuration at a glance
 
@@ -97,8 +102,9 @@ All options with comments: [tether.example.toml](tether.example.toml); rules and
 ## Tests
 
 ```
-python -m unittest discover -s tether-host/tests
+make -C tether-node/sim test                       # C unit tests (ASan/UBSan)
+python -m unittest discover -s tether-host/tests   # protocol, host with a Python node, host with the C engine (needs make and a C compiler)
 ```
 
-`testvectors/frames.json` holds byte-exact frames that both the Python and the (future) C implementation must reproduce;
+`testvectors/frames.json` holds byte-exact frames that both the Python and the C implementation reproduce;
 regenerate it with `testvectors/make_vectors.py` only when the wire format changes (bump the protocol version).

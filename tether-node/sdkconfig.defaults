@@ -1,0 +1,19 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# USB: one CDC-ACM interface through TinyUSB on the native USB port; the console stays on UART0
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_MAX_PORTS=1
+CONFIG_TINYUSB_CDC_RX_BUFSIZE=2048
+CONFIG_TINYUSB_CDC_TX_BUFSIZE=2048
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# lwIP: 16 channels + 4 listeners + margin (verify the limit of the IDF version); larger TCP buffers for throughput
+CONFIG_LWIP_MAX_SOCKETS=24
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11488
+CONFIG_LWIP_TCP_WND_DEFAULT=11488
+CONFIG_VFS_SUPPORT_SELECT=y
+
+# Robustness: a crash reboots, which the host detects through the new session id
+CONFIG_ESP_SYSTEM_PANIC_REBOOT=y
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
