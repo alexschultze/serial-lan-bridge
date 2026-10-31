@@ -16,11 +16,12 @@ class T(IntEnum):
     HELLO = 0x01
     PING = 0x02
     PONG = 0x03
-    WIFI_SET = 0x10      # payload: ssid\0password
+    CONFIG = 0x10        # payload: full configuration as JSON (wifi, hotspot, listeners); replaces the previous one
     WIFI_STATUS = 0x11   # payload: state u8 | ip4 | gw4 | rssi i8
+    CONFIG_RES = 0x12    # payload: JSON per-part status
     OPEN_TCP = 0x20      # chan = new channel id; payload: port u16 | host (utf8, name or ip)
     OPEN_UDP = 0x21
-    LISTEN = 0x22        # chan = listener id; payload: port u16 (ESP32 listens on its Wi-Fi network)
+    LISTEN = 0x22        # reserved: listeners now come in CONFIG
     OPEN_RES = 0x23      # payload: status u8 (0 = ok) | initial credit u32
     ACCEPT = 0x24        # chan = new inbound channel; payload: listener id u16 | peer ip4 | peer port u16
     DATA = 0x30
