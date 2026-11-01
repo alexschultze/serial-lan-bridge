@@ -1,6 +1,6 @@
 # tether-node
 
-ESP32-S3 firmware (ESP-IDF 5.x, C). Specification: [../ARCHITECTURE.md](../ARCHITECTURE.md) sections 5 and 7.
+ESP32-S3 firmware (ESP-IDF, C; verified to build with ESP-IDF 6.1.0 through PlatformIO). Specification: [../ARCHITECTURE.md](../ARCHITECTURE.md) sections 5 and 7.
 
 ```
 components/tether_core/   portable C, no ESP-IDF dependency: framing, JSON, config validation, the engine
@@ -21,10 +21,10 @@ python -m unittest discover -s ../tether-host/tests     # includes end-to-end te
 ## Build and flash the ESP32-S3
 
 ```
-idf.py set-target esp32s3
-idf.py build
+pio run
 # hold BOOT while plugging in the USB cable (or press RESET with BOOT held), then:
-idf.py -p <port> flash
+pio run -t upload --upload-port <port>
+# plain ESP-IDF (same sources; not exercised yet): idf.py set-target esp32s3 && idf.py build && idf.py -p <port> flash
 ```
 
 After the first flash, `tether-host bootloader` puts a running node back into download mode. Console output goes to UART0.

@@ -4,7 +4,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "esp_log.h"
@@ -20,6 +19,7 @@ static const char *TAG = "usb";
 static StreamBufferHandle_t rx_sb;
 static int evfd = -1;
 static char serial[20];
+static const char lang_id[] = {0x09, 0x04};   /* language ID: English (US) */
 
 static void rx_cb(int itf, cdcacm_event_t *event)
 {
@@ -54,7 +54,7 @@ int usb_link_init(void)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(serial, sizeof serial, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     static const char *strings[] = {
-        (const char[]){0x09, 0x04},   /* 0: language ID (English) */
+        lang_id,                      /* 0: language ID */
         "tether",                     /* 1: manufacturer */
         "tether-node",                /* 2: product: the host recognises the node by this string */
         serial,                       /* 3: serial number */

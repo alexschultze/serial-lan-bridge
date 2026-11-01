@@ -20,8 +20,9 @@ static const char *TAG = "wifi";
 
 static esp_netif_t *sta_if, *ap_if;
 static SemaphoreHandle_t lock;
-static tc_wifi_cfg cfg;
-static bool have_cfg, cfg_new;
+static tc_wifi_cfg cfg;               /* owned by mgr_task (a snapshot of `pending`) */
+static tc_wifi_cfg pending;           /* written by wifi_mgr_apply under `lock` */
+static bool have_cfg, cfg_new;        /* protected by `lock` */
 static volatile bool sta_up;          /* station has an IP */
 static bool ap_on;
 static volatile int ap_clients;
@@ -146,16 +147,22 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 static void mgr_task(void *arg)
 {
+    bool have = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(500));
-        xSemaphoreTake(lock, portMAX_DELAY);
-        if (!have_cfg) {
-            xSemaphoreGive(lock);
+        bool fresh = false;
+        xSemaphoreTake(lock, pdMS_TO_TICKS(100));   /* held only to copy: the net task must never wait for a scan */
+        if (have_cfg && cfg_new) {
+            memcpy(&cfg, &pending, sizeof cfg);
+            cfg_new = false;
+            fresh = have = true;
+        }
+        xSemaphoreGive(lock);
+        if (!have) {
             continue;
         }
         int64_t now = now_ms();
-        if (cfg_new) {
-            cfg_new = false;
+        if (fresh) {
             esp_wifi_set_country_code(cfg.country, true);
             if (cfg.hotspot && cfg.hs_mode == 1) {
                 if (!ap_on) ap_start();
@@ -180,7 +187,6 @@ static void mgr_task(void *arg)
         } else if (ap_on && cfg.hs_mode == 0 && ap_clients == 0) {
             ap_stop();
         }
-        xSemaphoreGive(lock);
     }
 }
 
@@ -216,7 +222,7 @@ int wifi_mgr_apply(const tc_wifi_cfg *c, char *err, size_t errcap)
         return -1;
     }
     xSemaphoreTake(lock, portMAX_DELAY);
-    memcpy(&cfg, c, sizeof cfg);
+    memcpy(&pending, c, sizeof pending);
     have_cfg = true;
     cfg_new = true;
     xSemaphoreGive(lock);

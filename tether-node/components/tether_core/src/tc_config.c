@@ -1,4 +1,3 @@
-#include <arpa/inet.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,30 +43,29 @@ static int get_int(const char *js, const tj_tok *t, int obj, const char *key, lo
     return v >= 0;
 }
 
+/* "a.b.c.d" or "a.b.c.d/n" to network and mask in host byte order (no dependency on the platform's inet_pton). */
 static int parse_cidr(const char *s, tc_cidr *c)
 {
-    char buf[24];
-    if (strlen(s) >= sizeof buf) {
-        return -1;
-    }
-    strcpy(buf, s);
-    char *slash = strchr(buf, '/');
-    int bits = 32;
-    if (slash) {
-        *slash++ = 0;
+    uint32_t addr = 0;
+    for (int i = 0; i < 4; i++) {
         char *e;
-        long b = strtol(slash, &e, 10);
-        if (*e || e == slash || b < 0 || b > 32) {
+        long v = strtol(s, &e, 10);
+        if (e == s || v < 0 || v > 255 || (i < 3 && *e != '.') || (i == 3 && *e != 0 && *e != '/')) {
             return -1;
         }
-        bits = (int)b;
+        addr = (addr << 8) | (uint32_t)v;
+        s = (i < 3) ? e + 1 : e;
     }
-    struct in_addr a;
-    if (inet_pton(AF_INET, buf, &a) != 1) {
-        return -1;
+    long bits = 32;
+    if (*s == '/') {
+        char *e;
+        bits = strtol(s + 1, &e, 10);
+        if (e == s + 1 || *e || bits < 0 || bits > 32) {
+            return -1;
+        }
     }
     c->mask = bits == 0 ? 0 : 0xFFFFFFFFu << (32 - bits);
-    c->net = ntohl(a.s_addr) & c->mask;
+    c->net = addr & c->mask;
     return 0;
 }
 

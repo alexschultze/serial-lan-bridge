@@ -28,7 +28,7 @@ Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](AR
 | Wire protocol, shared byte-exact test vectors | done, tested in Python and C |
 | **tether-host** (config, serial link with reconnect, session, bridge channels, CLI) | done, tested against a Python node and against the real C engine over a pseudo-terminal |
 | **tether-node** portable core (framing, JSON, config validation, listeners, channels, flow control, control protocol) | done, C unit tests under ASan/UBSan, plus a Linux simulator that runs the same engine |
-| **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | written; see below for what has been compiled |
+| **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | compiles and links for the ESP32-S3 without warnings (ESP-IDF 6.1.0 via PlatformIO; 806 KB of a 3 MB slot, 15% RAM); **not yet run on a board** |
 | Hardware acceptance tests (ARCHITECTURE.md section 11) | not yet run: they need a board and the Windows PC |
 
 Tests today: 32 Python tests, 193 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
@@ -40,18 +40,19 @@ USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
   Manager the board should report hardware ID `VID_303A`. (Boards with a second "UART" port: use the one labelled USB.)
 * Bridge PC: Windows 11 (Linux/macOS also work), Python 3.11+, `pip install pyserial` (a library, no driver).
 * Network B with DHCP and WPA2/WPA3 (2.4 GHz). The API reachable from the PC.
-* To build the firmware: ESP-IDF 5.x on Linux or Windows.
+* To build the firmware: PlatformIO (`pip install platformio`) or ESP-IDF 5.2 or newer, on Linux or Windows.
 
 ## Quick start
 
-1. **Flash the node** (once; Linux or Windows):
+1. **Build and flash the node** (once; Linux or Windows). With PlatformIO (`pip install platformio`), the toolchain the firmware is
+   verified to build with:
    ```
    cd tether-node
-   idf.py set-target esp32s3
-   idf.py build
+   pio run
    # put the board in download mode (hold BOOT while plugging in the USB cable), then:
-   idf.py -p <port> flash
+   pio run -t upload --upload-port <port>
    ```
+   With plain ESP-IDF (same sources, `CMakeLists.txt`; not exercised yet): `idf.py set-target esp32s3 build flash -p <port>`.
 2. **Configure**: copy `tether.example.toml` to `tether.toml`; set the Wi-Fi network, the optional hotspot and the
    listeners (`port` opened on the node, `target` = the API as seen from the PC).
 3. **Run on the PC**:

@@ -1,7 +1,7 @@
 # Architecture and specification
 
 Status: v1 implemented and tested without hardware (Python host, portable C node core, Linux simulator); the ESP32 glue
-(USB, Wi-Fi) is written but not yet run on a board (see README). This document is the
+(USB, Wi-Fi) compiles for the ESP32-S3 but has not been run on a board (see README). This document is the
 single source of truth; where code and text disagree, fix one of them. Items marked **(verify)** depend on
 vendor behaviour that must be confirmed during implementation.
 
@@ -98,7 +98,7 @@ serial-lan-bridge/
 │   │   ├── bridge.py            per-channel pipe to the target, flow control, half-close, 502/504
 │   │   └── cli.py               run | status | ports | check-config | bootloader
 │   └── tests/                   protocol, fake_node.py + test_e2e.py (Python node), test_sim_e2e.py (C engine)
-└── tether-node/                 ESP-IDF 5.x project (C)
+└── tether-node/                 ESP-IDF project (C); platformio.ini, partitions.csv, sdkconfig.defaults
     ├── CMakeLists.txt, sdkconfig.defaults
     ├── components/tether_core/  portable C without ESP-IDF dependencies: tc_proto (COBS, CRC, deframer),
     │                            tc_json, tc_config (parse/validate), tc_engine (listeners, channels, flow control, control protocol)
@@ -258,14 +258,14 @@ retrying on reconnect.
 
 ### 5.1 Framework and build
 
-ESP-IDF 5.x (C), `idf.py`; components `esp_tinyusb` (managed component), `esp_wifi`, `esp_netif`, `lwip`, `mdns`,
-`json` (cJSON), `esp_timer`. Arduino, ESPHome and MicroPython were rejected (section 13). Key `sdkconfig.defaults`:
+ESP-IDF (C). Verified build: PlatformIO `espressif32@8.0.0` = ESP-IDF 6.1.0, managed components `esp_tinyusb` 1.7.6 and `mdns` 1.14.1
+(fetched from the Espressif component registry through `main/idf_component.yml`), `platformio.ini` in `tether-node/`. Plain `idf.py`
+uses the same `CMakeLists.txt` and sources but has not been exercised. Other components: `esp_wifi`, `esp_netif`, `lwip`, `esp_timer`. Arduino, ESPHome and MicroPython were rejected (section 13). Key `sdkconfig.defaults`:
 
 * TinyUSB device with a single CDC-ACM interface, custom descriptors: VID/PID of `esp_tinyusb` defaults
-  (`0x303A`/`0x4001` **(verify)**), product string `tether-node`, serial number = base MAC. TX/RX buffers ≥ 2048.
+  (`0x303A`/`0x4001`: Espressif VID, TinyUSB default PID `0x4000 + CDC bit`, read from the component source; confirm on hardware), product string `tether-node`, serial number = base MAC. TX/RX buffers ≥ 2048.
 * Console: UART0 (or disabled), **not** USB. ESP log output is additionally sent as `LOG` frames while a host is attached.
-* `CONFIG_LWIP_MAX_SOCKETS` ≥ 24 (16 channels + 4 listeners + wake-up fd + margin; check the maximum of the chosen
-  IDF version **(verify)**); TCP send/receive buffers and window raised toward 16 KiB (start from the IDF iperf example).
+* `CONFIG_LWIP_MAX_SOCKETS` = 24 (16 channels + 4 listeners + margin; accepted by IDF 6.1.0); TCP send/receive buffers and window raised toward 16 KiB (start from the IDF iperf example).
 * Wi-Fi power save off (`WIFI_PS_NONE`); task watchdog on; `PANIC_REBOOT` (a crash yields a new `session`, which the host detects).
 * No persistent configuration: NVS is initialised only because the Wi-Fi driver calibration data needs it.
 
@@ -508,10 +508,9 @@ image as an artifact.
 
 ## 12. Build, flash and operate
 
-* **Build node:** ESP-IDF 5.x environment, `cd tether-node && idf.py set-target esp32s3 && idf.py build`.
+* **Build node:** `cd tether-node && pio run` (PlatformIO, verified). Plain ESP-IDF: `idf.py set-target esp32s3 && idf.py build` (same sources, not exercised).
 * **First flash** (Linux or Windows): put the board in ROM download mode (hold BOOT, plug in USB or tap RESET). The chip's
-  ROM enumerates as a USB serial device that Windows binds with its inbox driver, `idf.py -p <port> flash`
-  (or `esptool.py`). After the app boots, it re-enumerates as `tether-node` on a (possibly different) COM port.
+  ROM enumerates as a USB serial device that Windows binds with its inbox driver, `pio run -t upload --upload-port <port>` (or `idf.py -p <port> flash`, or `esptool`). After the app boots, it re-enumerates as `tether-node` on a (possibly different) COM port.
 * **Re-flash:** the application's USB port does not support esptool's automatic reset, so run `tether-host bootloader`
   (sends REBOOT mode 1) or repeat the manual BOOT procedure.
 * **Which port on the board:** the one wired to the chip's native USB (GPIO19/20). Ports behind a CP210x/CH340 UART
@@ -534,28 +533,27 @@ image as an artifact.
 | Half-close | `CLOSE(EOF)` both ways, `RESET` for abort | full close only (breaks clients that shut down their write side) |
 | Idle reaping | off by default; never-used timeout only | blanket 60 s reaping (kills streams waiting for the first token) |
 | Node config scope | targets stay on the PC | targets on the node (exposes internal addresses on a Wi-Fi device) |
-| Framework | ESP-IDF 5.x (C) | Arduino-ESP32 (less control of USB/lwIP), ESPHome (build-time config, own services, USB device support unclear; custom component would carry the whole product anyway), MicroPython (speed, memory, REPL conflicts), Rust (tooling cost) |
+| Framework | ESP-IDF (C) | Arduino-ESP32 (less control of USB/lwIP), ESPHome (build-time config, own services, USB device support unclear; custom component would carry the whole product anyway), MicroPython (speed, memory, REPL conflicts), Rust (tooling cost) |
 | Host language | Python 3.11+, pyserial only | other languages: Python is the PC environment given by the requirement |
 | Hotspot | optional, WPA2 only, off unless configured | always-on or open AP (exposes the API) |
 | Transport security | none in v1 (documented) | TLS on the ESP32 (RAM, certificates, complexity); possible later |
 
 ## 14. Open points to verify during implementation
 
-1. `esp_tinyusb` default VID/PID and string-descriptor customisation in the chosen IDF release; Windows enumerates it as a plain
-   "USB Serial Device" with no driver prompt.
-2. `CONFIG_LWIP_MAX_SOCKETS` upper limit and RAM budget with 16 channels plus Wi-Fi AP+STA.
+1. Windows 11 enumerates the device as a plain "USB Serial Device" with no driver prompt, with the product string `tether-node` (the code compiles against esp_tinyusb 1.7.6; the PID is derived from its source).
+2. RAM budget with 16 channels plus Wi-Fi AP+STA under load (the idle build uses 15% of RAM; `heap_free` in STATUS shows the rest).
 3. Real USB CDC throughput with `pyserial` on Windows 11 (target ≥ 0.8 MB/s) and the best CDC buffer sizes.
 4. Software reset into ROM download mode on the S3 (REBOOT mode 1) from running TinyUSB firmware.
 5. AP+STA behaviour (channel following, scan interruptions) with real access points.
 6. The node uses its own CRC-32 (`tc_crc32`, verified against the vectors), so no ESP-ROM function is needed.
-7. The ESP32 glue (`usb_link.c`, `wifi_mgr.c`, `platform_esp.c`) follows the esp_tinyusb 1.x and ESP-IDF 5.x APIs from documentation;
-   it must be compiled and run on a board before it can be called verified.
+7. The ESP32 glue (`usb_link.c`, `wifi_mgr.c`, `platform_esp.c`) compiles and links against ESP-IDF 6.1.0 and esp_tinyusb 1.7.6, but has
+   never run: USB enumeration, throughput, Wi-Fi fallback and mDNS need a board.
 
 ## 15. Roadmap
 
 1. Done: framing, payload helpers, shared test vectors, unit tests.
 2. Done: tether-host (config, transports, session, bridge, CLI) with end-to-end tests against a Python node and the C engine.
 3. Done: portable node core in C (protocol, JSON, config, engine) with unit tests and the Linux simulator.
-4. Written, build and run to be confirmed: ESP32 glue (USB CDC, Wi-Fi station/hotspot/mDNS, platform hooks).
+4. Done to the extent possible without a board: ESP32 glue (USB CDC, Wi-Fi station/hotspot/mDNS, platform hooks) compiles and links for the ESP32-S3.
 5. Integration on hardware with the checklist of section 11.
 6. Later: UDP, `reload`, TLS option, X-Forwarded-For injection, Windows service wrapper, OTA via the host.
