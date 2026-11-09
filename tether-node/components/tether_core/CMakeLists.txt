@@ -1,8 +1,11 @@
 set(TC_SRCS src/tc_proto.c src/tc_json.c src/tc_config.c src/tc_engine.c)
 if(ESP_PLATFORM)
-    idf_component_register(SRCS ${TC_SRCS} INCLUDE_DIRS include)
+    idf_component_register(SRCS ${TC_SRCS} INCLUDE_DIRS include PRIV_REQUIRES pthread lwip)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE TC_RESOLVER_STACK=4096)   # small explicit stack for the DNS worker thread
 else()
     add_library(tether_core STATIC ${TC_SRCS})
     target_include_directories(tether_core PUBLIC include)
+    find_package(Threads REQUIRED)
+    target_link_libraries(tether_core PUBLIC Threads::Threads)
     target_compile_options(tether_core PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()

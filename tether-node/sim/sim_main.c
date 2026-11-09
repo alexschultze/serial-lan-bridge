@@ -15,6 +15,14 @@
 #include "tc_engine.h"
 
 static int master = -1;
+static int wake_pipe[2] = {-1, -1};
+
+static void sim_wake(void *c)
+{
+    (void)c;
+    char b = 1;
+    (void)!write(wake_pipe[1], &b, 1);
+}
 
 static uint32_t sim_millis(void *c)
 {
@@ -87,12 +95,17 @@ int main(void)
     cfmakeraw(&t);
     tcsetattr(slave, TCSANOW, &t);
     fcntl(master, F_SETFL, fcntl(master, F_GETFL, 0) | O_NONBLOCK);
+    if (pipe(wake_pipe) != 0) { perror("pipe"); return 1; }
+    fcntl(wake_pipe[0], F_SETFL, fcntl(wake_pipe[0], F_GETFL, 0) | O_NONBLOCK);
+    fcntl(wake_pipe[1], F_SETFL, fcntl(wake_pipe[1], F_GETFL, 0) | O_NONBLOCK);
     printf("PTY %s\n", path);
     fflush(stdout);
 
     tc_platform p = {0};
     p.version = "tether-sim 0.1";
     p.link_fd = master;
+    p.wake_fd = wake_pipe[0];
+    p.wake = sim_wake;
     p.link_read = sim_read;
     p.link_write = sim_write;
     p.millis = sim_millis;

@@ -240,5 +240,129 @@ class SimE2E(unittest.IsolatedAsyncioTestCase):
         rig.sim.kill()
 
 
+@unittest.skipUnless(HAVE_SIM, "no C compiler / make, or not POSIX")
+class SimForwards(unittest.IsolatedAsyncioTestCase):
+    """Local port on the PC -> the C engine connects to an endpoint on 'its' network (loopback here)."""
+
+    async def test_forward_by_ip_streams(self):
+        async def endpoint(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\n\r\n")
+            for i in range(4):
+                w.write(f"data: {i}\n\n".encode())
+                await w.drain()
+                await asyncio.sleep(0.15)
+            w.close()
+        srv, tp = await echo_server(endpoint)
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp)])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET /events HTTP/1.1\r\n\r\n")
+            await r.readuntil(b"\r\n\r\n")
+            t0 = asyncio.get_running_loop().time()
+            self.assertEqual(await r.readuntil(b"\n\n"), b"data: 0\n\n")
+            self.assertLess(asyncio.get_running_loop().time() - t0, 0.4)
+            self.assertEqual(await r.read(), b"".join(f"data: {i}\n\n".encode() for i in range(1, 4)))
+            w.close()
+        srv.close()
+
+    async def test_forward_by_name_uses_the_resolver_thread(self):
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "localhost", tp)])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 8)).endswith(b"ok"))
+            w.close()
+        srv.close()
+
+    async def test_forward_large_both_ways(self):
+        payload = os.urandom(1_500_000)
+
+        async def echo(r, w):
+            while True:
+                d = await r.read(65536)
+                if not d:
+                    break
+                w.write(d)
+                await w.drain()
+            w.close()
+        srv, tp = await echo_server(echo)
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp, "tcp")])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+
+            async def send():
+                w.write(payload)
+                await w.drain()
+                w.write_eof()
+            st = asyncio.ensure_future(send())
+            got = await asyncio.wait_for(r.read(-1), 60)
+            await st
+            self.assertEqual(got, payload)
+        srv.close()
+
+    async def test_refused_gives_502(self):
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", free_port())])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 8)).startswith(b"HTTP/1.1 502"))
+            w.close()
+
+    async def test_unresolvable_name_fails_cleanly(self):
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "does-not-exist.invalid", 80)])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            data = await asyncio.wait_for(r.read(-1), 12)
+            self.assertTrue(data.startswith(b"HTTP/1.1 502") or data.startswith(b"HTTP/1.1 504"), data)
+            w.close()
+
+    async def test_both_directions_and_capacity(self):
+        async def hold(r, w):
+            await r.read(-1)
+        srv, tp = await echo_server(hold)
+        lp, fp = free_port(), free_port()
+        async with SimRig(make_cfg(lp, tp, forwards=[(fp, "127.0.0.1", tp, "tcp")])) as rig:
+            conns = [await asyncio.open_connection("127.0.0.1", fp) for _ in range(8)]
+            conns += [await asyncio.open_connection("127.0.0.1", lp) for _ in range(8)]
+            await asyncio.sleep(0.6)
+            self.assertEqual(len(rig.session.channels), P.MAX_CHANNELS)        # 8 outbound + 8 inbound share the 16 channels
+            r, w = await asyncio.open_connection("127.0.0.1", lp)               # the 17th: 503 from the node
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 5)).startswith(b"HTTP/1.1 503"))
+            r, w = await asyncio.open_connection("127.0.0.1", fp)               # tcp forward: closed
+            try:
+                data = await asyncio.wait_for(r.read(-1), 5)
+            except ConnectionError:
+                data = b""
+            self.assertEqual(data, b"")
+            for _, cw in conns:
+                cw.close()
+        srv.close()
+
+    async def test_forward_after_node_restart(self):
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp)])) as rig:
+            rig.sim.kill()
+            await asyncio.sleep(0.3)
+            await asyncio.wait_for(rig.session.running.wait(), 15)
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 8)).endswith(b"ok"))
+        srv.close()
+
+
 if __name__ == "__main__":
     unittest.main()

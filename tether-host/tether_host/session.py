@@ -9,6 +9,7 @@ import time
 
 from . import protocol as P
 from .bridge import Channel
+from .forward import Forwarder
 from .link import LinkClosed
 
 log = logging.getLogger("tether.session")
@@ -49,6 +50,8 @@ class Session:
         self._cfg_tries = 0
         self._config_ok = False
         self.stats = {"reconnects": 0, "crc_errors": 0}
+        self._open_waiters = {}
+        self.forwarder = Forwarder(cfg, self)
 
     # ---- outbound ---------------------------------------------------------------------------
     def send(self, frame):
@@ -60,7 +63,22 @@ class Session:
         except LinkClosed:
             self._set_fail("link closed")
 
+    def expect_open(self, chan):
+        fut = asyncio.get_running_loop().create_future()
+        self._open_waiters[chan] = fut
+        return fut
+
+    def alloc_host_chan(self):
+        """A free host-chosen channel id, or None when the node's capacity is used up."""
+        if len(self.channels) >= P.MAX_CHANNELS:
+            return None
+        for n in range(1, P.MAX_CHANNELS + 1):
+            if P.HOST_CHAN_BASE + n not in self.channels:
+                return P.HOST_CHAN_BASE + n
+        return None
+
     def channel_done(self, ch):
+        self._open_waiters.pop(ch.id, None)
         if self.channels.get(ch.id) is ch:
             del self.channels[ch.id]
 
@@ -71,6 +89,13 @@ class Session:
             self._fail.set_result("stopped")
 
     async def run_forever(self):
+        await self.forwarder.start()      # local ports are bound once and survive link reconnects
+        try:
+            await self._run_forever()
+        finally:
+            await self.forwarder.stop()
+
+    async def _run_forever(self):
         step = 0
         while not self._stop:
             try:
@@ -124,6 +149,7 @@ class Session:
         for ch in list(self.channels.values()):
             ch.abort()
         self.channels.clear()
+        self._open_waiters.clear()
         self._t = None
         try:
             await transport.close()
@@ -166,6 +192,13 @@ class Session:
                             "%s", f.payload[1:].decode(errors="replace").rstrip())
         elif t == P.T.ACCEPT:
             self._on_accept(f)
+        elif t == P.T.OPEN_RES:
+            fut = self._open_waiters.pop(f.chan, None)
+            if fut and not fut.done():
+                try:
+                    fut.set_result(P.parse_open_res(f.payload))
+                except (P.FrameError, ValueError):
+                    fut.set_result(P.Open.BAD_REQUEST)
         elif t in (P.T.DATA, P.T.CREDIT, P.T.CLOSE):
             ch = self.channels.get(f.chan)
             if ch is None:

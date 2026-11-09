@@ -65,6 +65,13 @@ class Payloads(unittest.TestCase):
         self.assertEqual(P.parse_credit(P.credit(3, 2048).payload), 2048)
         self.assertEqual(P.parse_close(P.close(3, P.Close.RESET).payload), P.Close.RESET)
 
+    def test_open(self):
+        f = P.open_req(P.HOST_CHAN_BASE + 2, 9)
+        self.assertEqual((f.type, f.chan, P.parse_open(f.payload)), (P.T.OPEN, 0x8002, 9))
+        self.assertEqual(P.parse_open_res(P.open_res(0x8002, P.Open.DNS).payload), P.Open.DNS)
+        with self.assertRaises(P.FrameError):
+            P.parse_open(b"\x01")
+
     def test_data_split(self):
         frames = list(P.data_frames(2, bytes(2500)))
         self.assertEqual([len(f.payload) for f in frames], [1024, 1024, 452])

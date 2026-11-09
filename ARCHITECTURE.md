@@ -21,6 +21,7 @@ between the PC and an ESP32-S3. Hard requirements, all of which shaped the desig
 | R6 | Bandwidth below 1 MB/s is acceptable | USB full speed (12 Mbit/s) is sufficient. |
 | R7 | **One TOML file** configures everything and is applied on **every (re)start** | Node holds no persistent configuration and no secrets in flash, section 6. |
 | R8 | Flash from Linux or Windows | Standard ESP-IDF tooling, section 12. |
+| R9 | **Bidirectional**: also a **local port on the PC** that is carried to an **endpoint on the node's network**, flexibly configured in the same file | Second channel type: the host opens connections, the node connects out (`[[forward]]`, OPEN/OPEN_RES), sections 4.6b, 6 and 8. |
 
 ## 2. System overview
 
@@ -48,11 +49,18 @@ between the PC and an ESP32-S3. Hard requirements, all of which shaped the desig
                                            └──────────────────────────────┘
 ```
 
-Flow:
+Flow, inbound (Wi-Fi clients reach the API on the PC's network):
 
 ```
   Client ─► Node:8000 ─► USB ─► Host ─► API
   Client ◄─ Node ◄───── USB ◄─ Host ◄─ API      (streaming passes straight through)
+```
+
+Flow, outbound (a local program on the PC reaches an endpoint on the Wi-Fi network):
+
+```
+  Local app ─► 127.0.0.1:9000 ─► Host ─► USB ─► Node ─► 192.168.1.20:80 (device on network B)
+  Local app ◄─ (loopback)    ◄─ Host ◄─ USB ◄─ Node ◄─ (the endpoint)
 ```
 
 What each side sees:
@@ -74,8 +82,10 @@ status display. The node never learns the targets (less information on the expos
 Wi-Fi directly.
 
 **NAT semantics.**
-* Destination NAT: `node_wifi_ip:listener_port` maps to `target_host:target_port`, held in the host's config.
-* Source NAT: the API sees only connections from the PC. Network B sees only the node's Wi-Fi address (DHCP, not
+* Inbound destination NAT: `node_wifi_ip:listener_port` maps to `target_host:target_port`, held in the host's config.
+* Outbound destination NAT (forward): `pc_loopback:listen_port` maps to `endpoint_host:endpoint_port` on network B. The endpoint
+  sees the node's Wi-Fi address as the client; the local program only talks to loopback and learns nothing about network B.
+* Source NAT: the API sees only connections from the PC (inbound); the endpoint sees only the node (outbound). Network B sees only the node's Wi-Fi address (DHCP, not
   known in advance; found via mDNS and `tether-host status`).
 * Connection-level only: TCP in v1. No ICMP/ping, broadcast or multicast crosses the bridge, and UDP is reserved
   for a later version (message range `0x40-0x4F`).
@@ -95,7 +105,8 @@ serial-lan-bridge/
 │   │   ├── config.py            load/validate TOML, build the node CONFIG JSON
 │   │   ├── link.py              Transport: pyserial (reader/writer threads) and in-memory loopback; port discovery
 │   │   ├── session.py           handshake, PING/PONG, CONFIG push, STATUS, channel table, reconnect
-│   │   ├── bridge.py            per-channel pipe to the target, flow control, half-close, 502/504
+│   │   ├── bridge.py            per-channel pipe (inbound Channel, outbound OutboundChannel), flow control, half-close, 502/503/504
+│   │   ├── forward.py           local listening ports for [[forward]], channel id allocation
 │   │   └── cli.py               run | status | ports | check-config | bootloader
 │   └── tests/                   protocol, fake_node.py + test_e2e.py (Python node), test_sim_e2e.py (C engine)
 └── tether-node/                 ESP-IDF project (C); platformio.ini, partitions.csv, sdkconfig.defaults
@@ -131,9 +142,12 @@ are tested against `testvectors/frames.json`.
 
 ### 4.2 Channels
 
-* `chan = 0` is the control channel. `chan 1..16` are data channels, one per client connection.
-* Channel ids are allocated by the **node** (lowest free id), because connections originate on the Wi-Fi side. An
-  id is reusable only after the channel has ended (4.6).
+* `chan = 0` is the control channel; the rest are data channels, one per connection. At most 16 are open at the same time on
+  the node, inbound and outbound together.
+* Inbound channels (a client connected to a node listener) have ids `1..16`, allocated by the **node** (lowest free id).
+* Outbound channels (a local program connected to a forwarded port) have ids `0x8001..0x8010`, chosen by the **host**
+  (lowest free). The two ranges cannot collide, so neither side needs to ask the other for an id.
+* An id is reusable only after its channel has ended (4.6).
 
 ### 4.3 Message types
 
@@ -148,12 +162,16 @@ are tested against `testvectors/frames.json`.
 | 0x13 | LOG | node→host | 0 | level u8 (0 error, 1 warn, 2 info, 3 debug) · UTF-8 text |
 | 0x14 | REBOOT | host→node | 0 | mode u8: 0 normal restart, 1 restart into ROM download mode **(verify)** |
 | 0x20 | ACCEPT | node→host | n | listener u16 · peer ip4 (4 B) · peer port u16 |
+| 0x21 | OPEN | host→node | 0x8000+n | forward id u16 (the endpoint comes from the node's configuration, not from the message) |
+| 0x22 | OPEN_RES | node→host | 0x8000+n | status u8: 0 OK, 1 REFUSED, 2 UNREACHABLE, 3 DNS, 4 NO_CAPACITY, 5 UNKNOWN_FORWARD, 6 BAD_REQUEST, 7 NOT_READY |
 | 0x30 | DATA | both | n | stream bytes, 1..1024 |
 | 0x31 | CREDIT | both | n | additional bytes the peer may send, u32 |
 | 0x32 | CLOSE | both | n | reason u8: 0 EOF, 1 RESET, 2 PROTO, 3 NO_CHANNEL |
 
 Unknown types on chan 0 are ignored (forward compatibility). A frame for a channel that is not open is dropped
-and, unless it is itself a CLOSE, answered with `CLOSE(NO_CHANNEL)`.
+and, unless it is itself a CLOSE, answered with `CLOSE(NO_CHANNEL)`. A receiver of `CLOSE(NO_CHANNEL)` treats it like RESET,
+except for a channel on which both EOFs were already exchanged (a CREDIT that crossed the end of the channel): that one is
+ignored, so queued data is still delivered.
 
 ### 4.4 Session start, restart and keepalive
 
@@ -195,10 +213,12 @@ The host builds this from the TOML (section 6). Host-only settings and all liste
   },
   "hotspot": { "mode": "auto", "ssid": "", "psk": "secret123", "fallback": 30 },
   "listeners": [ {"id": 1, "port": 8000, "http": true, "allow": ["192.168.1.0/24"]} ],
+  "forwards": [ {"id": 1, "host": "192.168.1.20", "port": 80} ],
   "link": { "window": 4096, "never_used_timeout": 30, "idle_timeout": 0 }
 }
 ```
 
+`listeners` and `forwards` may each be empty, but not both. A forward's `host` is an IPv4 address or a name resolved on the node's network.
 `hotspot` is `null` when absent (no hotspot, ever). An empty `hotspot.ssid` means `tether-XXXX` derived by the node.
 `allow` absent or empty means "same subnet as the receiving interface" (7.5). A missing `psk` means an open network.
 
@@ -232,6 +252,25 @@ retrying on reconnect.
    channel at once and does not answer. A socket error on a side produces `CLOSE(RESET)`.
 5. Ids are reused only after the channel is finished or aborted on the node (the node is the allocator). Since the
    link is ordered, a stale frame for a reused id cannot arrive after the new `ACCEPT`.
+
+### 4.6b Outbound channels (forwards)
+
+1. A local program connects to the forwarded port on the PC (`[[forward]]`, normally bound to `127.0.0.1`). If the link is not
+   RUNNING or the host has no free channel, an `http` forward answers `HTTP/1.1 503`, a `tcp` forward just closes.
+2. The host picks a channel id (`0x8001..0x8010`) and sends `OPEN(chan, forward id)`. It does not read from the local program
+   yet.
+3. The node looks the forward up in its configuration, allocates a channel and connects without blocking: an IPv4 literal is
+   used directly; a name is resolved by a short-lived worker thread (so a slow DNS never stalls the other channels). It answers
+   `OPEN_RES(chan, status)`. Errors: connection refused gives `REFUSED`; timeout, no route and network down give `UNREACHABLE`
+   (the node gives up after 15 s); a failed lookup gives `DNS`; all channels busy gives `NO_CAPACITY`; an unknown forward id or
+   one before the first CONFIG gives `UNKNOWN_FORWARD` or `NOT_READY`. A failed open leaves no channel behind.
+4. The host waits for `OPEN_RES` at most `connect_timeout` (per forward, default 5 s). On timeout it sends `CLOSE(RESET)` (which
+   also ends a connect still in progress on the node). On any failure an `http` forward answers the local program with 503
+   (`NO_CAPACITY`, `NOT_READY`), 504 (host timeout) or 502 (all others), a `tcp` forward closes the connection.
+5. On `OK` both directions start with `link.window` bytes of credit and the channel behaves exactly like an inbound one
+   (data, credits, half-close, reset, 4.6 and 4.7).
+6. A channel is finished only when both EOFs were exchanged **and** every queued byte has reached its stream, so a fast
+   endpoint closing right after its last response cannot cut the data the local program has not yet received.
 
 ### 4.7 Flow control
 
@@ -275,6 +314,7 @@ uses the same `CMakeLists.txt` and sources but has not been exercised. Other com
 |---|---|
 | TinyUSB task / `rx_cb` | copies received CDC bytes into a stream buffer and signals an eventfd that the `net` task selects on |
 | `net` | the engine (`tc_engine_poll`): one `select()` loop over the eventfd, listeners and channel sockets; owns the channel table (no locks); parses frames, applies the credit rules, runs the timers; it is also the only writer to CDC, so frames never interleave, and a write that makes no progress for 5 s counts as a stall (4.8) |
+| DNS worker threads | one short-lived detached thread per outbound connect to a *name*; only `getaddrinfo`, then wake the `net` task |
 | `wifi_mgr` | state machine of section 7 (500 ms tick); event handlers only update flags |
 
 Per channel: socket fd, `credit_out` (what the node may still send to the host), `rx_out` (what the host may still send),
@@ -295,6 +335,10 @@ timestamps. Client sockets use non-blocking mode, `TCP_NODELAY`, keepalive (idle
   the API server's own keep-alive timeout, which the host propagates as EOF. The node cannot tell an idle keep-alive
   connection from a streaming response that is waiting for the first token (minutes on a cold GPU worker), so it never
   reaps established channels by default.
+* **Outbound connects** (section 4.6b): non-blocking `connect()`, completion through `select()`; DNS in a detached worker thread
+  (at most 4 at a time, 4 KiB stack, result handed over through a small queue and a wake-up fd); the node's own limit is 15 s.
+  A forward id that disappears or changes in a CONFIG resets its open channels. The endpoint is always taken from the node's
+  configuration; the host cannot ask for an arbitrary address.
 * **No other network services.** The node listens only on the configured ports; there is no web UI, OTA or debug server.
 
 ## 6. Configuration
@@ -335,13 +379,22 @@ port     = 8000             # port opened on the node, 1..65535, unique
 target   = "10.0.0.5:8000"  # host:port the PC connects to (name resolved by Windows)
 protocol = "http"           # "http" (node/host may answer 503/502/504) or "tcp"
 allow    = ["192.168.1.0/24"]  # who may connect; omitted = same subnet as the node's interface
+
+[[forward]]                 # 0 to 8 forwards: a local port on the PC carried to an endpoint on the node's network
+id              = 1
+listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0.0.1:<port>
+target          = "192.168.1.20:80"  # on the Wi-Fi network: IPv4 address or a name the node resolves there
+protocol        = "http"             # "http" (503/502/504 replies to the local program) or "tcp"
+connect_timeout = 5                  # seconds the node may take to connect; default host.connect_timeout
 ```
 
 ### 6.2 Validation (host side, before anything is sent; `tether-host check-config` runs only this)
 
-Required: at least one `[[wifi.network]]` and one `[[listener]]`. SSID 1..32 bytes, PSK 8..63 characters (or absent),
+Required: at least one `[[wifi.network]]`, and at least one `[[listener]]` or `[[forward]]`. SSID 1..32 bytes, PSK 8..63 characters (or absent),
 hotspot PSK 8..63; at most 4 networks and 4 listeners; unique `id` and `port`; `target` is `host:port`; `allow`
-entries are valid IPv4 CIDRs; `window` in range. The node validates again and reports problems in CONFIG_RES.
+entries are valid IPv4 CIDRs; `window` in range. Forwards: at most 8, unique `id` and `listen`, `listen` is `host:port` or a port,
+`target` is `host:port` (host at most 63 characters, no spaces), `connect_timeout` 0.1 to 120 s. A `listen` address other than loopback is
+allowed (the local port is then reachable from other machines) and logged as a warning. The node validates again and reports problems in CONFIG_RES.
 
 ### 6.3 Security of the file
 
@@ -356,7 +409,8 @@ CONFIG is a full replacement, applied as a **diff** against the running configur
 * changed Wi-Fi networks → reconnect;
 * hotspot added/removed/changed → AP restarted (its clients drop);
 * listener unchanged (same `id`, `port`, `allow`, `http`) → open channels survive; changed or removed → its listening
-  socket and channels are closed; new → opened.
+  socket and channels are closed; new → opened;
+* forward unchanged (same `id`, `host`, `port`) → its channels survive; changed or removed → they are reset.
 After a host-lost period or session reset, all channels are closed anyway (4.4), but Wi-Fi and listeners stay up.
 
 ### 6.5 Lifecycle
@@ -467,7 +521,9 @@ Expected 0.8 to 1.0 MB/s total (USB full speed shares both directions; 12 Mbit/s
 | Host process stops or crashes | after 10 s: host-lost, channels closed, answers 503 | – | reset, then 503 |
 | Wi-Fi lost | reconnect with backoff (hotspot after `fallback`), listeners stay bound | STATUS shows it | resets for open connections |
 | API target down | – | 502/504 for `http` listeners | HTTP 502/504 |
-| All 16 channels used | static 503 | – | HTTP 503 |
+| Forward endpoint refuses, unreachable or unresolvable | `OPEN_RES` with the reason | 502 (504 on timeout) for `http` forwards, close for `tcp` | HTTP 502/504 or closed connection |
+| Forwarded port used while the link is down | – | 503 (`http`) or close (`tcp`); the local port stays bound across reconnects | HTTP 503 |
+| All 16 channels used | static 503 (inbound), `OPEN_RES NO_CAPACITY` (outbound) | 503 to the local program | HTTP 503 |
 | CRC/framing error | resets session (4.8) | resets session | in-flight connections reset |
 | Config invalid | keeps previous config, reports errors | prints the errors | – |
 | Two nodes plugged in, no selector | – | refuses to start, lists ports | – |
@@ -477,6 +533,9 @@ In-flight streaming responses cannot be resumed after a fault; clients retry.
 ## 10. Security
 
 * Threat model: any device on network B (or the hotspot) can try to reach the listeners; the USB link is physically trusted.
+* Outbound: the endpoint of a forward comes from the node's configuration, never from a message, so a compromised PC cannot make the
+  node connect anywhere else; the local port binds to `127.0.0.1` by default (other addresses are logged as a warning). Any local
+  program or user on the PC can use a forwarded loopback port, so treat it like any local service.
 * Mitigations: per-listener allow-list (default: same subnet), WPA2 on the hotspot (no open AP, ever), no node-side
   management services, no secrets persisted on the node, passwords only in the config file on the PC (permissions, 6.3),
   targets hidden from the node, bounded resources (16 channels, 4 listeners, never-used timeout).
@@ -493,7 +552,7 @@ In-flight streaming responses cannot be resumed after a fault; clients retry.
 | Shared vectors | Python and C decode and re-encode identical bytes | `testvectors/frames.json`; `make_vectors.py` only with a protocol version bump |
 | Unit (C) | CRC, COBS, deframer faults, JSON, config validation, vectors; built with ASan/UBSan | `make -C tether-node/sim test` |
 | Host against a Python node | streaming without buffering, 1.5 MB round trip, half-close, 502, 503 at 17 connections, node reset, framing fault, silent node | `tether-host/tests/test_e2e.py` with `fake_node.py` |
-| Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config | `tether-host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
+| Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config; forwards by IP and by name (resolver thread), 1.5 MB both ways, refused and unresolvable endpoints, 8 outbound plus 8 inbound sharing the 16 channels | `tether-host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
 | Hardware | checklist below | a board plus the bridge PC |
 
 Hardware acceptance checklist: (1) fresh Windows 11 without added drivers: board enumerates as one COM port, "USB Serial Device",
@@ -532,7 +591,9 @@ image as an artifact.
 | Flow control | per-channel credits | none (one slow client would block all); TCP-style windows over the link (overkill) |
 | Half-close | `CLOSE(EOF)` both ways, `RESET` for abort | full close only (breaks clients that shut down their write side) |
 | Idle reaping | off by default; never-used timeout only | blanket 60 s reaping (kills streams waiting for the first token) |
-| Node config scope | targets stay on the PC | targets on the node (exposes internal addresses on a Wi-Fi device) |
+| Node config scope | inbound targets stay on the PC; outbound endpoints are in the node's configuration and OPEN carries only an id | targets on the node for inbound (exposes internal addresses on a Wi-Fi device); free-form addresses in OPEN (would let a compromised PC scan network B through the node) |
+| Outbound channel ids | host-chosen range `0x8001..0x8010`, separate from the node's `1..16` | one id space with a request/response id exchange (extra round trip), or a shared range (races) |
+| DNS for outbound names | worker thread per lookup | blocking `getaddrinfo` in the net task (a dead DNS server would stall every connection for seconds and trip the host watchdog), the lwIP raw DNS API (not portable to the Linux simulator) |
 | Framework | ESP-IDF (C) | Arduino-ESP32 (less control of USB/lwIP), ESPHome (build-time config, own services, USB device support unclear; custom component would carry the whole product anyway), MicroPython (speed, memory, REPL conflicts), Rust (tooling cost) |
 | Host language | Python 3.11+, pyserial only | other languages: Python is the PC environment given by the requirement |
 | Hotspot | optional, WPA2 only, off unless configured | always-on or open AP (exposes the API) |

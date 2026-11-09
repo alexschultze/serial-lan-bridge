@@ -137,7 +137,15 @@ static void test_config(void)
                              "\"listeners\":[{\"id\":1,\"port\":1,\"http\":true,\"allow\":[]}],\"link\":{}}";
     CHECK(tc_config_parse(no_hotspot, strlen(no_hotspot), &c, err, sizeof err) == 0 && !c.wifi.hotspot && c.window == 4096);
 
+    const char *fwd = "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[{\"ssid\":\"a\"}]},\"hotspot\":null,\"listeners\":[],"
+                      "\"forwards\":[{\"id\":1,\"host\":\"192.168.1.20\",\"port\":80},{\"id\":2,\"host\":\"printer.local\",\"port\":631}],\"link\":{}}";
+    CHECK(tc_config_parse(fwd, strlen(fwd), &c, err, sizeof err) == 0);
+    CHECK(c.n_lst == 0 && c.n_fwd == 2 && c.fwd[0].id == 1 && c.fwd[0].port == 80 && strcmp(c.fwd[1].host, "printer.local") == 0);
+
     const char *bad[] = {
+        "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[{\"ssid\":\"a\"}]},\"listeners\":[],\"forwards\":[]}",
+        "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[{\"ssid\":\"a\"}]},\"forwards\":[{\"id\":1,\"host\":\"x\",\"port\":0}]}",
+        "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[{\"ssid\":\"a\"}]},\"forwards\":[{\"id\":1,\"host\":\"x\",\"port\":1},{\"id\":1,\"host\":\"y\",\"port\":2}]}",
         "{\"v\":2}",
         "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[]},\"listeners\":[{\"id\":1,\"port\":1}]}",
         "{\"v\":1,\"wifi\":{\"country\":\"DE\",\"networks\":[{\"ssid\":\"a\"}]},\"hotspot\":{\"psk\":\"short\"},\"listeners\":[{\"id\":1,\"port\":1}]}",

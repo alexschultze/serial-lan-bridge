@@ -21,6 +21,8 @@ MAX_LISTENERS = 4
 DEFAULT_WINDOW = 4096       # per channel and direction, bytes
 MAX_CONFIG = 8192           # reassembled CONFIG JSON, bytes
 CONTROL_CHAN = 0
+HOST_CHAN_BASE = 0x8000     # channel ids chosen by the host (OPEN) are HOST_CHAN_BASE + 1..MAX_CHANNELS; the node's are 1..MAX_CHANNELS
+MAX_FORWARDS = 8
 
 FLAG_MORE = 0x01            # CONFIG only: more chunks follow
 
@@ -37,10 +39,12 @@ class T(IntEnum):
     REBOOT = 0x14       # host -> node, payload: mode u8 (0 app, 1 ROM download mode)
     # channels (chan 1..16)
     ACCEPT = 0x20       # node -> host, payload: listener u16 | peer ip4 | peer port u16
+    OPEN = 0x21         # host -> node, chan = host-chosen id (HOST_CHAN_BASE+n), payload: forward id u16
+    OPEN_RES = 0x22     # node -> host, payload: status u8 (see Open)
     DATA = 0x30         # both, payload: stream bytes (<= MAX_PAYLOAD)
     CREDIT = 0x31       # both, payload: u32 additional bytes the peer may send
     CLOSE = 0x32        # both, payload: reason u8
-    # 0x40-0x4F reserved (UDP / outbound connections, later)
+    # 0x40-0x4F reserved (UDP, later)
 
 
 class Role(IntEnum):
@@ -58,6 +62,17 @@ class Close(IntEnum):
     RESET = 1       # abort now, both directions; receiver frees the channel, no reply
     PROTO = 2       # protocol violation (e.g. credit overrun); same effect as RESET
     NO_CHANNEL = 3  # reply to a frame for a channel that is not open; never answered
+
+
+class Open(IntEnum):
+    OK = 0
+    REFUSED = 1         # the endpoint refused the connection
+    UNREACHABLE = 2     # timeout, no route, network down
+    DNS = 3             # the name could not be resolved on the node's network
+    NO_CAPACITY = 4     # all channels in use
+    UNKNOWN_FORWARD = 5
+    BAD_REQUEST = 6     # id already in use, malformed
+    NOT_READY = 7       # node not configured / host lost
 
 
 @dataclass
@@ -247,3 +262,23 @@ class ConfigAssembler:
         blob = bytes(self._buf)
         self._buf.clear()
         return blob
+
+
+def open_req(chan: int, forward_id: int) -> Frame:
+    return Frame(T.OPEN, chan, struct.pack("<H", forward_id))
+
+
+def parse_open(p: bytes) -> int:
+    if len(p) != 2:
+        raise FrameError("bad OPEN")
+    return struct.unpack("<H", p)[0]
+
+
+def open_res(chan: int, status: Open) -> Frame:
+    return Frame(T.OPEN_RES, chan, bytes([status]))
+
+
+def parse_open_res(p: bytes) -> Open:
+    if len(p) != 1:
+        raise FrameError("bad OPEN_RES")
+    return Open(p[0])

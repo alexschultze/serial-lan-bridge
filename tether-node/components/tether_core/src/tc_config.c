@@ -147,8 +147,10 @@ int tc_config_parse(const char *js, size_t len, tc_config *o, char *errbuf, size
     /* listeners */
     int ls = tj_get(js, t, 0, "listeners");
     int lc = ls >= 0 && t[ls].type == TJ_ARR ? t[ls].size : 0;
-    if (lc < 1 || lc > TC_MAX_LISTENERS) {
-        bad(&er, "listeners needs 1..%d entries", TC_MAX_LISTENERS);
+    int fw = tj_get(js, t, 0, "forwards");
+    int fc = fw >= 0 && t[fw].type == TJ_ARR ? t[fw].size : 0;
+    if (lc > TC_MAX_LISTENERS || fc > TC_MAX_FORWARDS || lc + fc < 1) {
+        bad(&er, "needs 1..%d listeners or 1..%d forwards", TC_MAX_LISTENERS, TC_MAX_FORWARDS);
     } else {
         for (int i = 0; i < lc; i++) {
             int it = tj_item(t, ls, i);
@@ -182,6 +184,24 @@ int tc_config_parse(const char *js, size_t len, tc_config *o, char *errbuf, size
             l->n_allow = (uint8_t)ac;
         }
         o->n_lst = (uint8_t)lc;
+    }
+
+    for (int i = 0; i < fc && fc <= TC_MAX_FORWARDS; i++) {
+        int it = tj_item(t, fw, i);
+        tc_forward_cfg *f = &o->fwd[i];
+        long id, port;
+        get_int(js, t, it, "id", 0, 1, 65535, &er, "forward id", &id);
+        get_int(js, t, it, "port", 0, 1, 65535, &er, "forward port", &port);
+        if (id == 0 || port == 0) bad(&er, "forward %d: id and port required", i);
+        f->id = (uint16_t)id;
+        f->port = (uint16_t)port;
+        int h = tj_get(js, t, it, "host");
+        int hl = h >= 0 ? tj_str(js, &t[h], f->host, sizeof f->host) : -1;
+        if (hl < 1) bad(&er, "forward %d: host must be 1..63 characters", i);
+        for (int j = 0; j < i; j++) {
+            if (o->fwd[j].id == f->id) bad(&er, "forward id %d used twice", f->id);
+        }
+        o->n_fwd = (uint8_t)(i + 1);
     }
 
     /* link */

@@ -32,3 +32,12 @@ port     = 8000             # port opened on the node
 target   = "10.0.0.5:8000"  # where the PC connects: host:port on the PC's network
 protocol = "http"           # "http" (503/502/504 replies) or "tcp"
 allow    = ["192.168.1.0/24"]   # who may connect; omit for "same subnet as the node"
+
+# The other direction: a local port on the PC carried to an endpoint on the node's Wi-Fi network.
+# A program on the PC connects to 127.0.0.1:9000 and reaches 192.168.1.20:80 on the Wi-Fi network.
+[[forward]]                 # 0 to 8 forwards
+id              = 1
+listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0.0.1:<port>
+target          = "192.168.1.20:80"  # IPv4 address, or a name the node resolves on the Wi-Fi network
+protocol        = "http"             # "http" (503/502/504 replies to the local program) or "tcp"
+connect_timeout = 5                  # seconds; default host.connect_timeout

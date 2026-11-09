@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 MAX_NETWORKS = 4
 MAX_LISTENERS = 4
+MAX_FORWARDS = 8
 
 
 class ConfigError(Exception):
@@ -61,6 +62,27 @@ class Listener:
 
 
 @dataclass
+class Forward:
+    """A port on the PC (normally loopback) carried to an endpoint on the node's Wi-Fi network."""
+    id: int
+    listen_host: str
+    listen_port: int
+    target_host: str      # IPv4 address or a name the node resolves on its own network
+    target_port: int
+    protocol: str = "http"
+    connect_timeout: float = 5.0
+
+    @property
+    def http(self):
+        return self.protocol == "http"
+
+    @property
+    def exposed(self):
+        """True when the local port is reachable from other machines."""
+        return self.listen_host not in ("127.0.0.1", "localhost", "::1") and not self.listen_host.startswith("127.")
+
+
+@dataclass
 class Config:
     host: HostSettings
     link: LinkSettings
@@ -68,11 +90,18 @@ class Config:
     networks: list
     hotspot: Hotspot | None
     listeners: list
+    forwards: list = field(default_factory=list)
 
     def listener(self, lid):
         for l in self.listeners:
             if l.id == lid:
                 return l
+        return None
+
+    def forward(self, fid):
+        for f in self.forwards:
+            if f.id == fid:
+                return f
         return None
 
     def node_json(self) -> bytes:
@@ -90,6 +119,7 @@ class Config:
                 "mode": self.hotspot.mode, "ssid": self.hotspot.ssid,
                 "psk": self.hotspot.psk, "fallback": self.hotspot.fallback},
             "listeners": [{"id": l.id, "port": l.port, "http": l.http, "allow": l.allow} for l in self.listeners],
+            "forwards": [{"id": f.id, "host": f.target_host, "port": f.target_port} for f in self.forwards],
             "link": {"window": self.link.window, "never_used_timeout": self.link.never_used_timeout,
                      "idle_timeout": self.link.idle_timeout},
         }
@@ -139,6 +169,21 @@ def _int(problems, where, v, lo, hi):
         problems.append(f"{where} must be an integer {lo}..{hi}")
         return lo
     return v
+
+
+def _hostport(problems, where, v, default_host=None):
+    """'host:port', or just a port (or integer) when a default host is allowed."""
+    text = str(v) if v is not None else ""
+    host, sep, port = text.rpartition(":")
+    if not sep:
+        host, port = default_host or "", text
+    try:
+        n = int(port)
+        assert host and 1 <= n <= 65535
+    except (ValueError, AssertionError):
+        problems.append(f"{where} must be host:port" + (" or a port number" if default_host else ""))
+        return "", 0
+    return host, n
 
 
 def parse_config(raw: dict) -> Config:
@@ -228,11 +273,37 @@ def parse_config(raw: dict) -> Config:
         if len(norm) > 8:
             p.append(f"{where}.allow has more than 8 entries")
         listeners.append(Listener(lid, port, th, tport, proto, norm))
-    if not listeners:
-        p.append("at least one [[listener]] is required")
     if len(listeners) > MAX_LISTENERS:
         p.append(f"at most {MAX_LISTENERS} listeners")
 
+    forwards = []
+    fids, fports = set(), set()
+    for i, f in enumerate(raw.get("forward", [])):
+        where = f"forward[{i}]"
+        fid = _int(p, where + ".id", f.get("id"), 1, 65535)
+        if fid in fids:
+            p.append(f"{where}.id {fid} is used twice")
+        fids.add(fid)
+        lh, lp = _hostport(p, where + ".listen", f.get("listen"), default_host="127.0.0.1")
+        if (lh, lp) in fports:
+            p.append(f"{where}.listen {lh}:{lp} is used twice")
+        fports.add((lh, lp))
+        th, tp = _hostport(p, where + ".target", f.get("target"))
+        if th and (len(th) > 63 or any(c.isspace() for c in th)):
+            p.append(f"{where}.target host must be at most 63 characters without spaces")
+        proto = str(f.get("protocol", "http"))
+        if proto not in ("http", "tcp"):
+            p.append(f"{where}.protocol must be http or tcp")
+        ct = f.get("connect_timeout", host.connect_timeout)
+        if isinstance(ct, bool) or not isinstance(ct, (int, float)) or not 0.1 <= ct <= 120:
+            p.append(f"{where}.connect_timeout must be 0.1..120 seconds")
+            ct = host.connect_timeout
+        forwards.append(Forward(fid, lh, lp, th, tp, proto, float(ct)))
+    if len(forwards) > MAX_FORWARDS:
+        p.append(f"at most {MAX_FORWARDS} forwards")
+    if not listeners and not forwards:
+        p.append("at least one [[listener]] or [[forward]] is required")
+
     if p:
         raise ConfigError(p)
-    return Config(host, link, country.upper(), networks, hotspot, listeners)
+    return Config(host, link, country.upper(), networks, hotspot, listeners, forwards)

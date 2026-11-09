@@ -34,9 +34,16 @@ typedef struct {
 } tc_listener_cfg;
 
 typedef struct {
+    uint16_t id, port;
+    char host[64];               /* IPv4 literal or a name resolved on the node's network */
+} tc_forward_cfg;
+
+typedef struct {
     tc_wifi_cfg wifi;
     uint8_t n_lst;
     tc_listener_cfg lst[TC_MAX_LISTENERS];
+    uint8_t n_fwd;
+    tc_forward_cfg fwd[TC_MAX_FORWARDS];
     uint16_t window;
     uint32_t never_used_s, idle_s;
 } tc_config;
@@ -57,6 +64,8 @@ typedef struct {
 typedef struct {
     void *ctx;
     const char *version;
+    int wake_fd;                                                        /* readable after wake() was called (resolver threads); or -1 */
+    void (*wake)(void *ctx);                                            /* thread-safe: make the engine's select() return */
     int link_fd;                                                        /* select()able fd that is readable when link_read has data, or -1 */
     int (*link_read)(void *ctx, uint8_t *buf, size_t cap);              /* >0 bytes, 0 none, <0 fatal */
     int (*link_write)(void *ctx, const uint8_t *buf, size_t n, int may_drop);  /* 0 ok (or dropped when may_drop), <0 stalled/closed */

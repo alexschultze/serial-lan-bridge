@@ -3,16 +3,17 @@ CORE := ../components/tether_core
 SRCS := $(wildcard $(CORE)/src/*.c)
 CFLAGS ?= -std=gnu11 -g -O1 -Wall -Wextra -Wno-unused-parameter -I$(CORE)/include
 SAN ?= -fsanitize=address,undefined
+LDLIBS ?= -pthread
 
 all: build/tether_sim build/test_core
 
 build/tether_sim: sim_main.c $(SRCS) $(wildcard $(CORE)/include/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(SAN) -o $@ sim_main.c $(SRCS)
+	$(CC) $(CFLAGS) $(SAN) -o $@ sim_main.c $(SRCS) $(LDLIBS)
 
 build/test_core: ../tests/test_core.c $(SRCS) $(wildcard $(CORE)/include/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(SAN) -o $@ ../tests/test_core.c $(SRCS)
+	$(CC) $(CFLAGS) $(SAN) -o $@ ../tests/test_core.c $(SRCS) $(LDLIBS)
 
 test: build/test_core
 	build/test_core ../../testvectors/frames.json

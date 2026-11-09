@@ -21,8 +21,11 @@ def free_port():
     return p
 
 
-def make_cfg(listen_port, target_port, protocol="http", window=4096):
+def make_cfg(listen_port, target_port, protocol="http", window=4096, forwards=()):
+    """forwards: (local listen port, target host, target port[, protocol]) tuples."""
     return parse_config({
+        "forward": [{"id": i + 1, "listen": fw[0], "target": f"{fw[1]}:{fw[2]}", "protocol": fw[3] if len(fw) > 3 else "http"}
+                    for i, fw in enumerate(forwards)],
         "link": {"window": window},
         "wifi": {"network": [{"ssid": "x", "psk": "password1"}]},
         "listener": [{"id": 1, "port": listen_port, "target": f"127.0.0.1:{target_port}", "protocol": protocol}],
@@ -229,6 +232,157 @@ class E2E(unittest.IsolatedAsyncioTestCase):
                 self.assertGreaterEqual(len(rig.nodes), 2)
         finally:
             S.PONG_TIMEOUT, S.PING_EVERY = old
+
+
+class Forwards(unittest.IsolatedAsyncioTestCase):
+    """The second direction: a local port on the PC carried to an endpoint on the node's network."""
+
+    async def test_forward_streams(self):
+        async def endpoint(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\n\r\n")
+            for i in range(4):
+                w.write(f"data: {i}\n\n".encode())
+                await w.drain()
+                await asyncio.sleep(0.15)
+            w.close()
+        srv, tp = await echo_server(endpoint)
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp)])) as rig:
+            self.assertEqual(rig.node.received_config["forwards"], [{"id": 1, "host": "127.0.0.1", "port": tp}])
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET /events HTTP/1.1\r\n\r\n")
+            await r.readuntil(b"\r\n\r\n")
+            t0 = asyncio.get_running_loop().time()
+            self.assertEqual(await r.readuntil(b"\n\n"), b"data: 0\n\n")
+            self.assertLess(asyncio.get_running_loop().time() - t0, 0.4)
+            self.assertEqual(await r.read(), b"".join(f"data: {i}\n\n".encode() for i in range(1, 4)))
+            w.close()
+        srv.close()
+
+    async def test_forward_large_both_ways(self):
+        payload = os.urandom(1_200_000)
+
+        async def echo(r, w):
+            while True:
+                d = await r.read(65536)
+                if not d:
+                    break
+                w.write(d)
+                await w.drain()
+            w.close()
+        srv, tp = await echo_server(echo)
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp, "tcp")])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+
+            async def send():
+                w.write(payload)
+                await w.drain()
+                w.write_eof()
+            st = asyncio.ensure_future(send())
+            got = await asyncio.wait_for(r.read(-1), 20)
+            await st
+            self.assertEqual(got, payload)
+        srv.close()
+
+    async def test_both_directions_at_once(self):
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        lp, fp = free_port(), free_port()
+        async with Rig(make_cfg(lp, tp, forwards=[(fp, "127.0.0.1", tp)])):
+            for port in (lp, fp):      # inbound listener and outbound forward lead to the same dummy server
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(b"GET / HTTP/1.1\r\n\r\n")
+                self.assertTrue((await asyncio.wait_for(r.read(-1), 5)).endswith(b"hello"))
+                w.close()
+        srv.close()
+
+    async def test_refused_endpoint_gives_502_or_reset(self):
+        async with Rig(make_cfg(free_port(), 9, forwards=[(free_port(), "127.0.0.1", 9)])) as rig:
+            pass
+        fp_http, fp_tcp = free_port(), free_port()
+        dead = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp_http, "127.0.0.1", dead), (fp_tcp, "127.0.0.1", dead, "tcp")])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp_http)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 5)).startswith(b"HTTP/1.1 502"))
+            r, w = await asyncio.open_connection("127.0.0.1", fp_tcp)
+            try:
+                data = await asyncio.wait_for(r.read(-1), 5)
+            except ConnectionError:
+                data = b""
+            self.assertEqual(data, b"")
+
+    async def test_unresolvable_name_gives_502(self):
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "does-not-exist.invalid", 80)])):
+            r, w = await asyncio.open_connection("127.0.0.1", fp)
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 8)).startswith(b"HTTP/1.1 502"))
+
+    async def test_not_ready_gives_503(self):
+        fp = free_port()
+
+        async def never():
+            raise OSError("no node")
+        session = Session(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", 9)]), never)
+        task = asyncio.ensure_future(session.run_forever())
+        await asyncio.sleep(0.2)
+        r, w = await asyncio.open_connection("127.0.0.1", fp)
+        self.assertTrue((await asyncio.wait_for(r.read(-1), 5)).startswith(b"HTTP/1.1 503"))
+        session.stop()
+        await asyncio.wait_for(task, 5)
+
+    async def test_capacity_17th_gets_503(self):
+        async def hold(r, w):
+            await r.read(-1)
+        srv, tp = await echo_server(hold)
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp, "tcp")])) as rig:
+            conns = [await asyncio.open_connection("127.0.0.1", fp) for _ in range(P.MAX_CHANNELS)]
+            await asyncio.sleep(0.5)
+            self.assertEqual(len(rig.session.channels), P.MAX_CHANNELS)
+            self.assertEqual(len(rig.node.channels), P.MAX_CHANNELS)
+            r, w = await asyncio.open_connection("127.0.0.1", fp)       # tcp forward: closed without a reply
+            try:
+                data = await asyncio.wait_for(r.read(-1), 5)
+            except ConnectionError:
+                data = b""
+            self.assertEqual(data, b"")
+            for _, cw in conns:
+                cw.close()
+        srv.close()
+
+    async def test_port_in_use_is_reported(self):
+        blocker = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+        busy = blocker.sockets[0].getsockname()[1]
+        session = Session(make_cfg(free_port(), 9, forwards=[(busy, "127.0.0.1", 9)]), lambda: None)
+        with self.assertRaises(OSError):
+            await session.run_forever()
+        blocker.close()
+
+    async def test_forward_survives_node_reset(self):
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp)])) as rig:
+            await rig.node.stop()
+            await rig.node.t.close()
+            await asyncio.sleep(0.2)
+            await asyncio.wait_for(rig.session.running.wait(), 8)
+            r, w = await asyncio.open_connection("127.0.0.1", fp)   # the same local port, no rebind
+            w.write(b"GET / HTTP/1.1\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.read(-1), 5)).endswith(b"ok"))
+        srv.close()
 
 
 if __name__ == "__main__":

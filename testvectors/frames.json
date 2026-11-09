@@ -40,6 +40,30 @@
   "wire": "023102010102080105970e0ae900"
  },
  {
+  "name": "open",
+  "type": 33,
+  "flags": 0,
+  "chan": 32771,
+  "payload": "0700",
+  "wire": "022104038007059955f3c100"
+ },
+ {
+  "name": "open_res_ok",
+  "type": 34,
+  "flags": 0,
+  "chan": 32771,
+  "payload": "00",
+  "wire": "0222030380056bade64400"
+ },
+ {
+  "name": "open_res_refused",
+  "type": 34,
+  "flags": 0,
+  "chan": 32784,
+  "payload": "01",
+  "wire": "022208108001d480812d00"
+ },
+ {
   "name": "close_eof",
   "type": 50,
   "flags": 0,
