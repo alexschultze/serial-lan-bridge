@@ -199,18 +199,19 @@ static void send_status(tc_engine *e)
     if (e->p.get_status) {
         e->p.get_status(e->p.ctx, &st);
     }
-    char ssid[80], host[96], js[700];
+    char ssid[80], host[96], note[140], js[860];
     jesc(ssid, sizeof ssid, st.ssid);
     jesc(host, sizeof host, st.hostname);
+    jesc(note, sizeof note, st.note);
     const char *state = e->state == TC_STATE_RUNNING ? "running" : (e->host_lost ? "host_lost" : "needs_config");
     int n = snprintf(js, sizeof js,
                      "{\"state\":\"%s\",\"mode\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"hostname\":\"%s\","
                      "\"ap_clients\":%d,\"channels\":%d,\"uptime\":%u,\"counters\":{\"crc_errors\":%u,\"rx_overflow\":%u,"
-                     "\"tx_stalls\":%u,\"accepted\":%u,\"refused\":%u,\"opened\":%u,\"open_failed\":%u},\"heap_free\":%u,\"version\":\"%s\"}",
+                     "\"tx_stalls\":%u,\"accepted\":%u,\"refused\":%u,\"opened\":%u,\"open_failed\":%u},\"heap_free\":%u,\"note\":\"%s\",\"version\":\"%s\"}",
                      state, st.mode, ssid, st.ip, st.rssi, host, st.ap_clients, nchannels(e),
                      (unsigned)((now_ms(e) - e->boot_ms) / 1000), (unsigned)e->cnt.crc_errors, (unsigned)e->cnt.rx_overflow,
                      (unsigned)e->cnt.tx_stalls, (unsigned)e->cnt.accepted, (unsigned)e->cnt.refused, (unsigned)e->cnt.opened,
-                     (unsigned)e->cnt.open_failed, (unsigned)st.heap_free, e->p.version ? e->p.version : "");
+                     (unsigned)e->cnt.open_failed, (unsigned)st.heap_free, note, e->p.version ? e->p.version : "");
     if (n > 0 && (size_t)n < sizeof js) {
         emit(e, TC_T_STATUS, 0, (const uint8_t *)js, (size_t)n, 1);
     }
@@ -430,6 +431,9 @@ static void do_accept(tc_engine *e, lst_t *l)
         struct linger rst = {1, 0};
         if (!peer_allowed(e, &l->cfg, peer, local)) {
             e->cnt.refused++;
+            elog(e, 1, "listener %u: refused %u.%u.%u.%u (not in the allow-list%s)", l->cfg.id, (unsigned)(peer >> 24),
+                 (unsigned)(peer >> 16 & 255), (unsigned)(peer >> 8 & 255), (unsigned)(peer & 255),
+                 l->cfg.n_allow ? "" : "; default: same subnet only");
             setsockopt(fd, SOL_SOCKET, SO_LINGER, &rst, sizeof rst);
             close(fd);
             continue;
@@ -438,6 +442,8 @@ static void do_accept(tc_engine *e, lst_t *l)
         uint8_t *ring = (c && e->state == TC_STATE_RUNNING) ? malloc(e->cfg.window) : NULL;
         if (!ring) {
             e->cnt.refused++;
+            elog(e, 1, "listener %u: refused a client: %s", l->cfg.id,
+                 e->state != TC_STATE_RUNNING ? "no host / not configured" : (c ? "out of memory" : "all 16 channels busy"));
             if (l->cfg.http) {
                 send(fd, RESP_503, sizeof RESP_503 - 1, MSG_NOSIGNAL);
                 shutdown(fd, SHUT_WR);
@@ -479,7 +485,10 @@ static uint8_t errno_to_status(int er)
 
 static void open_failed(tc_engine *e, chan_t *c, uint8_t status)
 {
+    static const char *names[] = {"ok", "refused", "unreachable", "name not resolved", "no free channel",
+                                  "unknown forward", "bad request", "not ready"};
     e->cnt.open_failed++;
+    elog(e, 1, "forward %u: connect failed: %s", c->lid, status < 8 ? names[status] : "?");
     send_open_res(e, c->id, status);
     chan_free(e, c, true);
 }
@@ -516,12 +525,14 @@ static void connect_progress(tc_engine *e, chan_t *c)
         er = errno;
     }
     if (er != 0) {
+        elog(e, 3, "forward %u: connect error %d (%s)", c->lid, er, strerror(er));
         open_failed(e, c, errno_to_status(er));
         return;
     }
     c->connecting = false;
     tune_socket(c->sock);
     e->cnt.opened++;
+    elog(e, 3, "forward %u: connected (channel 0x%04x)", c->lid, c->id);
     send_open_res(e, c->id, TC_OPEN_OK);
     chan_flush(e, c);   /* data that arrived while connecting */
 }
@@ -593,6 +604,7 @@ static void resolver_results(tc_engine *e)
             if (e->ch[i].used && e->ch[i].dns_pending && e->ch[i].req == j->req) c = &e->ch[i];
         }
         if (c) {   /* otherwise the channel was closed in the meantime */
+            elog(e, 3, "forward %u: '%s' %s", c->lid, j->host, j->ok ? "resolved" : "could not be resolved");
             c->dns_pending = false;
             if (j->ok) start_connect(e, c, j->addr_be, j->port);
             else open_failed(e, c, TC_OPEN_DNS);
@@ -791,6 +803,7 @@ static void handle_frame(tc_engine *e, const tc_frame *f)
     case TC_T_CLOSE: {
         chan_t *c = find_chan(e, f->chan);
         if (!c) {
+            elog(e, 3, "frame type 0x%02x for channel 0x%04x, which is not open", f->type, f->chan);
             if (f->type != TC_T_CLOSE) send_close(e, f->chan, TC_CLOSE_NO_CHANNEL);
             break;
         }
@@ -798,6 +811,7 @@ static void handle_frame(tc_engine *e, const tc_frame *f)
             c->rx_out -= (int32_t)f->plen;
             if (c->rx_out < 0 || f->plen > c->cap - c->len) {
                 e->cnt.rx_overflow++;
+                elog(e, 0, "channel 0x%04x: host sent more than its credit (protocol error)", c->id);
                 send_close(e, c->id, TC_CLOSE_PROTO);
                 chan_free(e, c, true);
                 break;
@@ -953,11 +967,16 @@ int tc_engine_poll(tc_engine *e, int timeout_ms)
         chan_t *c = &e->ch[i];
         if (!c->used) continue;
         if (c->connecting || c->dns_pending) {
-            if (now - c->t_open >= CONNECT_LIMIT_MS) open_failed(e, c, TC_OPEN_UNREACHABLE);
+            if (now - c->t_open >= CONNECT_LIMIT_MS) {
+                elog(e, 3, "forward %u: no connection after %d s", c->lid, CONNECT_LIMIT_MS / 1000);
+                open_failed(e, c, TC_OPEN_UNREACHABLE);
+            }
         } else if (c->linger_on && now - c->t_linger >= LINGER_MS) {
+            elog(e, 3, "channel 0x%04x: half-closed for 60 s, resetting", c->id);
             send_close(e, c->id, TC_CLOSE_RESET);
             chan_free(e, c, true);
         } else if (!c->data_any && e->cfg.never_used_s && now - c->t_open >= e->cfg.never_used_s * 1000u) {
+            elog(e, 3, "channel 0x%04x: no data for %u s, closing", c->id, (unsigned)e->cfg.never_used_s);
             send_close(e, c->id, TC_CLOSE_RESET);
             chan_free(e, c, true);
         } else if (e->cfg.idle_s && now - c->t_last >= e->cfg.idle_s * 1000u) {
@@ -966,7 +985,7 @@ int tc_engine_poll(tc_engine *e, int timeout_ms)
         }
     }
     if (e->state == TC_STATE_RUNNING && now - e->last_host_rx > HOST_SILENCE_MS) {
-        e->host_lost = true;
+        e->host_lost = true;   /* the LOG below is not seen by the host (it is gone), only on the node's console */
         to_needs_config(e, "host silent");
     }
     if (e->state == TC_STATE_NEEDS_CONFIG && now - e->last_hello >= HELLO_EVERY_MS) {

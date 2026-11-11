@@ -37,7 +37,7 @@ Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](AR
 | **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | compiles and links for the ESP32-S3 without warnings (ESP-IDF 6.1.0 via PlatformIO; 806 KB of a 3 MB slot, 15% RAM); **not yet run on a board** |
 | Hardware acceptance tests (ARCHITECTURE.md section 11) | not yet run: they need a board and the Windows PC |
 
-Tests today: 50 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
+Tests today: 51 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
 USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
 
 ## Requirements
@@ -75,6 +75,25 @@ Other commands: `tether-host ports` (lists serial ports and marks tether nodes),
 
 **Try it without hardware** (Linux/macOS): `make -C tether-node/sim` builds a simulated node; it prints a pseudo-terminal path
 (`PTY /dev/pts/N`) that you can set as `host.port` in the config.
+
+## First use: what to look for
+
+`tether-host run` logs every step on the console; add `--log-level debug` to see the handshake, the configuration exchange and
+each channel. Messages from the ESP32 appear under `tether.node`, so you rarely need its serial console.
+
+| Console shows | Meaning and fix |
+|---|---|
+| `cannot open the node: no tether-node found` | No matching USB device. Check `tether-host ports`; use the board's native USB port (not a CP210x/CH340 UART port). |
+| `port COMx (303A:1001 ...) is an ESP32 in ROM/download mode` | The board runs the ROM bootloader or has no firmware: flash tether-node, then reset it. |
+| `serial read failed: ...` / `link lost, reconnecting` | The board was unplugged or reset; the host reconnects on its own. |
+| `node Wi-Fi: '<ssid>': authentication failed (wrong password?)` | Check `psk` of that network in the TOML file, then restart `tether-host`. |
+| `node Wi-Fi: none of the configured networks is in range` | Check the SSID (2.4 GHz only), or configure `[hotspot]` as a fallback. |
+| `node Wi-Fi: joined '<ssid>', address 192.168.1.57 (tether-xxxx.local)` | Ready: Wi-Fi clients use this address and the listener ports. |
+| `listener 1: refused 192.168.2.10 (not in the allow-list...)` | The client is outside `allow` (default: the node's own subnet only). |
+| `forward 1: connect failed: refused / unreachable / name not resolved` | The forward's `target` is wrong or the device on the Wi-Fi network is down. |
+| `error: forward 1: cannot listen on 127.0.0.1:9000` | Another program uses that local port; pick another `listen` port. |
+
+`tether-host status` (in a second terminal) shows the node's current Wi-Fi state, address, signal, counters and the last Wi-Fi problem.
 
 ## Configuration at a glance
 

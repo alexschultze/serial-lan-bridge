@@ -59,6 +59,7 @@ typedef struct {
     int rssi;
     int ap_clients;
     uint32_t heap_free;
+    char note[64];           /* last Wi-Fi problem in plain words ("wrong password?"), empty when fine */
 } tc_status;
 
 typedef struct {

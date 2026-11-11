@@ -139,6 +139,7 @@ class Session:
         self.running.clear()
         tasks = [asyncio.ensure_future(self._rx_loop()), asyncio.ensure_future(self._tick_loop())]
         self.send(P.hello(P.Role.HOST, P.NodeState.NEEDS_CONFIG, self.session_id, VERSION))
+        log.debug("sent HELLO (host session %08x)", self.session_id)
         why = await self._fail
         log.info("session ended: %s", why)
         for t in tasks:
@@ -182,9 +183,12 @@ class Session:
             self._on_config_res(f)
         elif t == P.T.STATUS:
             try:
-                self.node_status = json.loads(f.payload)
+                st = json.loads(f.payload)
             except ValueError:
+                log.debug("unreadable STATUS from the node: %r", f.payload[:80])
                 return
+            self._status_changes(self.node_status, st)
+            self.node_status = st
             self._write_status()
         elif t == P.T.LOG:
             if f.payload:
@@ -193,6 +197,7 @@ class Session:
         elif t == P.T.ACCEPT:
             self._on_accept(f)
         elif t == P.T.OPEN_RES:
+            log.debug("OPEN_RES channel 0x%04x: %s", f.chan, f.payload.hex())
             fut = self._open_waiters.pop(f.chan, None)
             if fut and not fut.done():
                 try:
@@ -201,7 +206,10 @@ class Session:
                     fut.set_result(P.Open.BAD_REQUEST)
         elif t in (P.T.DATA, P.T.CREDIT, P.T.CLOSE):
             ch = self.channels.get(f.chan)
+            if t == P.T.CLOSE:
+                log.debug("CLOSE channel 0x%04x reason %s", f.chan, f.payload.hex())
             if ch is None:
+                log.debug("frame type 0x%02x for channel 0x%04x, which is not open", t, f.chan)
                 if t != P.T.CLOSE:
                     self.send(P.close(f.chan, P.Close.NO_CHANNEL))
                 return
@@ -229,6 +237,8 @@ class Session:
             self._set_fail("protocol mismatch")
             return
         self.node_info = h
+        log.debug("node HELLO: %s, session %08x, state %s, max payload %d, max channels %d",
+                  h["version"], h["session"], h["state"].name, h["max_payload"], h["max_channels"])
         changed = h["session"] != self._node_session
         if changed or h["state"] == P.NodeState.NEEDS_CONFIG:
             if changed:
@@ -245,14 +255,19 @@ class Session:
         self._last_config = time.monotonic()
         self._cfg_tries += 1
         self._config_ok = False
-        for fr in P.config_frames(self.cfg.node_json()):
+        blob = self.cfg.node_json()
+        frames = list(P.config_frames(blob))
+        log.debug("sending CONFIG (%d bytes in %d frame(s), attempt %d)", len(blob), len(frames), self._cfg_tries)
+        for fr in frames:
             self.send(fr)
 
     def _on_config_res(self, f):
         try:
             res = json.loads(f.payload)
         except ValueError:
+            log.warning("unreadable CONFIG_RES from the node: %r", f.payload[:120])
             return
+        log.debug("CONFIG_RES: %s", res)
         if res.get("ok"):
             self._config_ok = True
             self._cfg_tries = 0
@@ -269,6 +284,8 @@ class Session:
             return
         lst = self.cfg.listener(lid)
         if lst is None or not self.running.is_set() or f.chan in self.channels:
+            log.warning("refusing ACCEPT on channel %d (listener %d %s)", f.chan, lid,
+                        "unknown" if lst is None else "not ready" if not self.running.is_set() else "channel id already in use")
             self.send(P.close(f.chan, P.Close.RESET))
             return
         peer = f"{socket.inet_ntoa(ip)}:{port}"
@@ -294,6 +311,28 @@ class Session:
                     return
                 if self._node_session is not None:
                     self._push_config()
+
+    def _status_changes(self, old, new):
+        """Log what a user needs to know when the node's Wi-Fi state changes."""
+        key = lambda s: (s.get("mode"), s.get("ssid"), s.get("ip"))
+        if key(old) != key(new):
+            mode = new.get("mode")
+            if mode in ("sta", "ap+sta"):
+                log.info("node Wi-Fi: joined '%s', address %s (%s), signal %s dBm%s", new.get("ssid"), new.get("ip"),
+                         new.get("hostname"), new.get("rssi"), ", hotspot also on" if mode == "ap+sta" else "")
+            elif mode == "ap":
+                log.warning("node Wi-Fi: no network joined; hotspot '%s' is up at %s", new.get("ssid"), new.get("ip"))
+            else:
+                log.info("node Wi-Fi: not connected yet")
+        if new.get("note") != old.get("note"):
+            if new.get("note"):
+                log.warning("node Wi-Fi: %s", new["note"])
+            elif old.get("note"):
+                log.info("node Wi-Fi: problem cleared")
+        oc, nc = old.get("counters") or {}, new.get("counters") or {}
+        for k in ("crc_errors", "rx_overflow", "tx_stalls"):
+            if nc.get(k, 0) > oc.get(k, 0) and old:
+                log.warning("node counter %s rose to %d", k, nc[k])
 
     def _write_status(self, link="up"):
         if not self.status_path:

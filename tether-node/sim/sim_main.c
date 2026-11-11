@@ -79,6 +79,9 @@ static void sim_status(void *c, tc_status *s)
     snprintf(s->hostname, sizeof s->hostname, "tether-sim.local");
     s->rssi = -50;
     s->heap_free = 123456;
+    if (getenv("SIM_WIFI_NOTE")) {   /* lets tests check that Wi-Fi problems reach the host */
+        snprintf(s->note, sizeof s->note, "%s", getenv("SIM_WIFI_NOTE"));
+    }
 }
 static void sim_reboot(void *c, int mode) { (void)c; fprintf(stderr, "[sim] reboot mode %d\n", mode); fflush(stderr); exit(0); }
 static void sim_log(void *c, int lvl, const char *m) { (void)c; fprintf(stderr, "[node %d] %s\n", lvl, m); }

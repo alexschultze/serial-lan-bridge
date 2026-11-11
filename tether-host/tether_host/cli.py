@@ -97,6 +97,8 @@ def cmd_status(args):
         print(f"wifi:  {node.get('ssid') or '-'}  ip {node.get('ip') or '-'}  rssi {node.get('rssi')}  host {node.get('hostname')}")
         print(f"       hotspot clients {node.get('ap_clients')}  channels {node.get('channels')}  heap free {node.get('heap_free')}")
         print(f"       counters {node.get('counters')}")
+        if node.get("note"):
+            print(f"wifi problem: {node['note']}")
     return 2 if stale else 0
 
 
@@ -136,7 +138,7 @@ def main(argv=None):
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     try:
         return args.fn(args)
-    except (ConfigError, SessionError) as e:
+    except (ConfigError, SessionError, OSError) as e:
         if isinstance(e, ConfigError):
             for p in e.problems:
                 print(f"config: {p}", file=sys.stderr)

@@ -64,6 +64,7 @@ class Channel:
         self._credit_ev.set()
 
     def on_close(self, reason):
+        log.debug("channel 0x%04x: node sent CLOSE %s", self.id, reason.name)
         if reason == P.Close.EOF:
             self.eof_recv = True
             self._wq.put_nowait(None)
@@ -77,6 +78,7 @@ class Channel:
     # ---- internals --------------------------------------------------------------------------
     async def _run(self):
         lst = self.listener
+        log.debug("channel %d: connecting to %s:%d", self.id, lst.target_host, lst.target_port)
         try:
             try:
                 self._reader, self._writer = await asyncio.wait_for(
@@ -213,6 +215,7 @@ class OutboundChannel(Channel):
     async def _run(self):
         self._reader, self._writer = self._pre
         f, s = self.forward, self.s
+        log.debug("channel 0x%04x: OPEN forward %d (%s:%d)", self.id, f.id, f.target_host, f.target_port)
         fut = s.expect_open(self.id)
         s.send(P.open_req(self.id, f.id))
         try:

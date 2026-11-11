@@ -32,6 +32,17 @@ static int backoff_s = 1;
 static int ap_subnet = 77;            /* 10.42.<ap_subnet>.0/24 */
 static char hostname[24];
 static char cur_ssid[33];
+static char note[64];                 /* last Wi-Fi problem, shown to the host in STATUS; protected by `lock` */
+
+static void set_note(const char *text)
+{
+    if (xSemaphoreTake(lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+        strlcpy(note, text, sizeof note);
+        xSemaphoreGive(lock);
+    }
+}
+
+#define CHECK(call) do { esp_err_t _r = (call); if (_r != ESP_OK) ESP_LOGW(TAG, "%s failed: %s", #call, esp_err_to_name(_r)); } while (0)
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -50,9 +61,9 @@ static void ap_set_ip(void)
     IP4_ADDR(&ip.ip, 10, 42, ap_subnet, 1);
     IP4_ADDR(&ip.gw, 10, 42, ap_subnet, 1);
     IP4_ADDR(&ip.netmask, 255, 255, 255, 0);
-    esp_netif_dhcps_stop(ap_if);
-    esp_netif_set_ip_info(ap_if, &ip);
-    esp_netif_dhcps_start(ap_if);
+    esp_netif_dhcps_stop(ap_if);   /* returns an error when it was not running; that is fine */
+    CHECK(esp_netif_set_ip_info(ap_if, &ip));
+    CHECK(esp_netif_dhcps_start(ap_if));
 }
 
 static void ap_start(void)
@@ -66,8 +77,8 @@ static void ap_start(void)
     ac.ap.authmode = WIFI_AUTH_WPA2_PSK;   /* never open */
     ac.ap.max_connection = 4;
     ac.ap.channel = 1;
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_set_config(WIFI_IF_AP, &ac);
+    CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    CHECK(esp_wifi_set_config(WIFI_IF_AP, &ac));
     ap_set_ip();
     ap_on = true;
     ESP_LOGI(TAG, "hotspot '%s' up on 10.42.%d.1", ssid, ap_subnet);
@@ -75,7 +86,7 @@ static void ap_start(void)
 
 static void ap_stop(void)
 {
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ap_on = false;
     ap_clients = 0;
     ESP_LOGI(TAG, "hotspot stopped");
@@ -84,12 +95,17 @@ static void ap_stop(void)
 static void try_connect(void)
 {
     wifi_scan_config_t sc = {.show_hidden = true};
-    if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
+    esp_err_t r = esp_wifi_scan_start(&sc, true);
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(r));
         return;
     }
     uint16_t n = 20;
     wifi_ap_record_t recs[20];
     esp_wifi_scan_get_ap_records(&n, recs);
+    for (int k = 0; k < n; k++) {
+        ESP_LOGD(TAG, "scan: '%s' ch %d rssi %d auth %d", (char *)recs[k].ssid, recs[k].primary, recs[k].rssi, recs[k].authmode);
+    }
     int best = -1;
     int8_t best_rssi = -127;
     for (int i = 0; i < cfg.n_nets; i++) {
@@ -106,6 +122,8 @@ static void try_connect(void)
         }
     }
     if (best < 0) {
+        ESP_LOGW(TAG, "none of the %d configured network(s) is in range (%d networks seen)", cfg.n_nets, n);
+        set_note("none of the configured networks is in range");
         return;
     }
     wifi_config_t wc = {0};
@@ -113,21 +131,36 @@ static void try_connect(void)
     strlcpy((char *)wc.sta.password, cfg.nets[best].psk, sizeof wc.sta.password);
     wc.sta.threshold.authmode = cfg.nets[best].psk[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     strlcpy(cur_ssid, cfg.nets[best].ssid, sizeof cur_ssid);
-    ESP_LOGI(TAG, "joining '%s'", cur_ssid);
-    esp_wifi_connect();
+    ESP_LOGI(TAG, "joining '%s' (rssi %d)", cur_ssid, best_rssi);
+    r = esp_wifi_connect();
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_connect: %s", esp_err_to_name(r));
+    }
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_DISCONNECTED) {
+            wifi_event_sta_disconnected_t *d = data;
+            int reason = d ? d->reason : 0;
+            char text[96];
+            if (reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_HANDSHAKE_TIMEOUT || reason == WIFI_REASON_AUTH_EXPIRE ||
+                reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT) {
+                snprintf(text, sizeof text, "'%.20s': authentication failed (wrong password?)", cur_ssid);
+            } else if (reason == WIFI_REASON_NO_AP_FOUND) {
+                snprintf(text, sizeof text, "'%.20s': network not found", cur_ssid);
+            } else {
+                snprintf(text, sizeof text, "'%.20s': disconnected, reason %d", cur_ssid, reason);
+            }
+            ESP_LOGW(TAG, "%s", text);
+            set_note(text);
             if (sta_up) {
-                ESP_LOGW(TAG, "station lost");
+                t_lost_ms = now_ms();   /* only a lost connection starts the fallback timer, not every failed attempt */
             }
             sta_up = false;
-            t_lost_ms = now_ms();
         } else if (id == WIFI_EVENT_AP_STACONNECTED) {
             ap_clients++;
         } else if (id == WIFI_EVENT_AP_STADISCONNECTED && ap_clients > 0) {
@@ -137,6 +170,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ip_event_got_ip_t *ev = data;
         sta_up = true;
         backoff_s = 1;
+        set_note("");
         ESP_LOGI(TAG, "got " IPSTR, IP2STR(&ev->ip_info.ip));
         if (ap_on && (ev->ip_info.ip.addr & 0xFFFFFF) == (PP_HTONL(0x0A2A0000u | ((uint32_t)ap_subnet << 8)) & 0xFFFFFF)) {
             ap_subnet = ap_subnet == 77 ? 78 : 77;   /* the station's network uses our hotspot range */
@@ -182,6 +216,7 @@ static void mgr_task(void *arg)
                 if (backoff_s < 60) backoff_s *= 2;
             }
             if (cfg.hotspot && !ap_on && now - t_lost_ms >= cfg.hs_fallback * 1000LL) {
+                ESP_LOGW(TAG, "no network joined for %d s: starting the hotspot", cfg.hs_fallback);
                 ap_start();
             }
         } else if (ap_on && cfg.hs_mode == 0 && ap_clients == 0) {
@@ -249,6 +284,10 @@ void wifi_mgr_status(tc_status *st)
     snprintf(st->hostname, sizeof st->hostname, "%s.local", hostname);
     st->ap_clients = ap_clients;
     st->heap_free = esp_get_free_heap_size();
+    if (xSemaphoreTake(lock, pdMS_TO_TICKS(20)) == pdTRUE) {
+        strlcpy(st->note, note, sizeof st->note);
+        xSemaphoreGive(lock);
+    }
     if (sta_up && esp_netif_get_ip_info(sta_if, &ip) == ESP_OK) {
         snprintf(st->ip, sizeof st->ip, IPSTR, IP2STR(&ip.ip));
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {

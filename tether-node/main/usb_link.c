@@ -1,4 +1,7 @@
-/* CDC-ACM link to tether-host over the native USB port (esp_tinyusb 1.x API; verify against the installed version). */
+/* CDC-ACM link to tether-host over the native USB port (esp_tinyusb 1.x).
+ *
+ * Received bytes stay in TinyUSB's own FIFO until the net task reads them: when the net task falls behind, the FIFO fills
+ * and USB itself makes the PC wait (no bytes are ever dropped). The receive callback only wakes the net task. */
 #include "usb_link.h"
 
 #include <fcntl.h>
@@ -11,45 +14,47 @@
 #include "esp_timer.h"
 #include "esp_vfs_eventfd.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/stream_buffer.h"
 #include "tinyusb.h"
 #include "tusb_cdc_acm.h"
 
 static const char *TAG = "usb";
-static StreamBufferHandle_t rx_sb;
 static int evfd = -1;
 static char serial[20];
 static const char lang_id[] = {0x09, 0x04};   /* language ID: English (US) */
+static uint32_t stalls;
+
+static void signal_rx(void)
+{
+    uint64_t one = 1;
+    write(evfd, &one, sizeof one);
+}
 
 static void rx_cb(int itf, cdcacm_event_t *event)
 {
-    uint8_t buf[256];
-    size_t n = 0;
-    do {
-        n = 0;
-        if (tinyusb_cdcacm_read((tinyusb_cdcacm_itf_t)itf, buf, sizeof buf, &n) != ESP_OK || n == 0) {
-            break;
-        }
-        xStreamBufferSend(rx_sb, buf, n, 0);
-    } while (n == sizeof buf);
-    uint64_t one = 1;
-    write(evfd, &one, sizeof one);
+    signal_rx();
+}
+
+static void line_state_cb(int itf, cdcacm_event_t *event)
+{
+    /* DTR is set while a program has the COM port open (pyserial sets it by default) */
+    ESP_LOGI(TAG, "host %s the port (DTR=%d RTS=%d)", event->line_state_changed_data.dtr ? "opened" : "closed",
+             event->line_state_changed_data.dtr, event->line_state_changed_data.rts);
 }
 
 int usb_link_init(void)
 {
     esp_vfs_eventfd_config_t ecfg = ESP_VFS_EVENTD_CONFIG_DEFAULT();
-    if (esp_vfs_eventfd_register(&ecfg) != ESP_OK) {
+    esp_err_t r = esp_vfs_eventfd_register(&ecfg);
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "eventfd registration failed: %s", esp_err_to_name(r));
         return -1;
     }
     evfd = eventfd(0, 0);
-    if (evfd >= 0) {
-        fcntl(evfd, F_SETFL, O_NONBLOCK);
-    }
-    rx_sb = xStreamBufferCreate(16384, 1);
-    if (evfd < 0 || !rx_sb) {
+    if (evfd < 0) {
+        ESP_LOGE(TAG, "eventfd() failed");
         return -1;
     }
+    fcntl(evfd, F_SETFL, O_NONBLOCK);
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(serial, sizeof serial, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -67,22 +72,26 @@ int usb_link_init(void)
         .external_phy = false,
         .configuration_descriptor = NULL,
     };
-    if (tinyusb_driver_install(&tusb) != ESP_OK) {
+    r = tinyusb_driver_install(&tusb);
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_install failed: %s", esp_err_to_name(r));
         return -1;
     }
     const tinyusb_config_cdcacm_t acm = {
         .usb_dev = TINYUSB_USBDEV_0,
         .cdc_port = TINYUSB_CDC_ACM_0,
-        .rx_unread_buf_sz = 2048,
+        .rx_unread_buf_sz = 64,
         .callback_rx = rx_cb,
         .callback_rx_wanted_char = NULL,
-        .callback_line_state_changed = NULL,
+        .callback_line_state_changed = line_state_cb,
         .callback_line_coding_changed = NULL,
     };
-    if (tusb_cdc_acm_init(&acm) != ESP_OK) {
+    r = tusb_cdc_acm_init(&acm);
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "tusb_cdc_acm_init failed: %s", esp_err_to_name(r));
         return -1;
     }
-    ESP_LOGI(TAG, "CDC-ACM up, serial %s", serial);
+    ESP_LOGI(TAG, "CDC-ACM up, product tether-node, serial %s", serial);
     return 0;
 }
 
@@ -92,10 +101,12 @@ int usb_link_read(uint8_t *buf, size_t cap)
 {
     uint64_t v;
     read(evfd, &v, sizeof v);   /* clear the wake-up first: data that arrives after this re-signals it */
-    size_t n = xStreamBufferReceive(rx_sb, buf, cap, 0);
-    if (n > 0 && xStreamBufferBytesAvailable(rx_sb) > 0) {
-        uint64_t one = 1;
-        write(evfd, &one, sizeof one);   /* more is waiting; make sure the next select() wakes up */
+    size_t n = 0;
+    if (tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, buf, cap, &n) != ESP_OK) {
+        return 0;
+    }
+    if (n > 0 && tud_cdc_n_available(0) > 0) {
+        signal_rx();   /* more is waiting; make sure the next select() wakes up */
     }
     return (int)n;
 }
@@ -103,6 +114,7 @@ int usb_link_read(uint8_t *buf, size_t cap)
 int usb_link_write(const uint8_t *buf, size_t n, int may_drop)
 {
     if (!tud_cdc_n_connected(0)) {
+        ESP_LOGD(TAG, "no host on the port (DTR low): %s %u bytes", may_drop ? "dropping" : "cannot send", (unsigned)n);
         return may_drop ? 0 : -1;
     }
     size_t off = 0;
@@ -111,12 +123,14 @@ int usb_link_write(const uint8_t *buf, size_t n, int may_drop)
         size_t q = tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, buf + off, n - off);
         off += q;
         if (off < n) {
-            if (may_drop) {
-                return 0;
+            if (may_drop && off == 0) {
+                return 0;   /* nothing of this frame was queued, so dropping it keeps the stream intact */
             }
             tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(100));
             if (q == 0 && esp_timer_get_time() - t0 > 5000000) {
-                return -1;   /* the host has not read for 5 s */
+                ESP_LOGW(TAG, "host has not read for 5 s (%u stalls so far); %u of %u bytes sent", (unsigned)++stalls,
+                         (unsigned)off, (unsigned)n);
+                return -1;
             }
         }
     }

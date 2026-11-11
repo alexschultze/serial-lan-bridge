@@ -229,6 +229,16 @@ class SimE2E(unittest.IsolatedAsyncioTestCase):
             st = rig.session.node_status
             self.assertEqual((st.get("state"), st.get("mode"), st.get("ssid")), ("running", "sta", "sim"))
 
+    async def test_wifi_problem_and_address_are_logged(self):
+        lp = free_port()
+        with self.assertLogs("tether.session", "INFO") as cm:
+            async with SimRig(make_cfg(lp, free_port()), env={"SIM_WIFI_NOTE": "'NetworkB': authentication failed (wrong password?)"}) as rig:
+                await asyncio.sleep(0.3)
+                self.assertIn("wrong password", rig.session.node_status.get("note", ""))
+        text = "\n".join(cm.output)
+        self.assertIn("joined 'sim', address 127.0.0.1", text)
+        self.assertIn("WARNING:tether.session:node Wi-Fi: 'NetworkB': authentication failed (wrong password?)", text)
+
     async def test_rejected_wifi_keeps_node_unconfigured(self):
         lp = free_port()
         rig = SimRig(make_cfg(lp, free_port()), env={"SIM_WIFI_FAIL": "1"})

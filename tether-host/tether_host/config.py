@@ -189,9 +189,13 @@ def _hostport(problems, where, v, default_host=None):
 def parse_config(raw: dict) -> Config:
     p = []
     h = raw.get("host", {})
+    ct = h.get("connect_timeout", 5)
+    if isinstance(ct, bool) or not isinstance(ct, (int, float)):
+        p.append("host.connect_timeout must be a number of seconds")
+        ct = 5
     host = HostSettings(
         port=str(h.get("port", "auto")), serial=str(h.get("serial", "")),
-        log_level=str(h.get("log_level", "info")).lower(), connect_timeout=float(h.get("connect_timeout", 5)))
+        log_level=str(h.get("log_level", "info")).lower(), connect_timeout=float(ct))
     if host.log_level not in ("debug", "info", "warning", "error"):
         p.append("host.log_level must be debug, info, warning or error")
     if not 0.1 <= host.connect_timeout <= 120:

@@ -1,8 +1,11 @@
 """Byte transports to the node: a pyserial implementation and an in-memory one for tests."""
 import asyncio
+import logging
 import queue
 import sys
 import threading
+
+log = logging.getLogger("tether.link")
 
 ESPRESSIF_VID = 0x303A
 ROM_BOOTLOADER_PID = 0x1001   # the chip's ROM USB-Serial/JTAG, not our application
@@ -64,13 +67,22 @@ def find_ports(selector="auto", serial_number=""):
         return [selector]
     out = []
     for p in list_ports.comports():
-        if p.vid != ESPRESSIF_VID or p.pid == ROM_BOOTLOADER_PID:
+        ident = f"{p.device} ({p.vid or 0:04X}:{p.pid or 0:04X} {p.product or p.description or ''})"
+        if p.vid != ESPRESSIF_VID:
+            log.debug("port %s: not an Espressif device", ident)
+            continue
+        if p.pid == ROM_BOOTLOADER_PID:
+            log.warning("port %s is an ESP32 in ROM/download mode or without tether firmware: flash tether-node, "
+                        "then reset the board", ident)
             continue
         product = (p.product or p.description or "").lower()
         if "tether" not in product and p.pid != TETHER_PID:
+            log.debug("port %s: Espressif, but not a tether-node", ident)
             continue
         if serial_number and (p.serial_number or "") != serial_number:
+            log.debug("port %s: serial number %s does not match host.serial", ident, p.serial_number)
             continue
+        log.debug("port %s: tether-node, serial %s", ident, p.serial_number)
         out.append(p.device)
     return out
 
@@ -85,6 +97,7 @@ class SerialTransport(Transport):
             except Exception:
                 pass
         self._ser.reset_input_buffer()
+        log.debug("opened %s (DTR=%s RTS=%s)", port, self._ser.dtr, self._ser.rts)
         self._loop = asyncio.get_running_loop()
         self._rx = asyncio.Queue()
         self._tx = queue.Queue()
@@ -107,8 +120,9 @@ class SerialTransport(Transport):
                 data = self._ser.read(self._ser.in_waiting or 1)
                 if data:
                     self._post(data)
-        except Exception:
-            pass
+        except Exception as e:
+            if not self.closed:
+                log.warning("serial read failed: %s (device unplugged or reset?)", e)
         finally:
             self.closed = True
             self._post(None)
@@ -120,8 +134,9 @@ class SerialTransport(Transport):
                 if data is None or self.closed:
                     break
                 self._ser.write(data)
-        except Exception:
-            pass
+        except Exception as e:
+            if not self.closed:
+                log.warning("serial write failed: %s (the node stopped reading?)", e)
         finally:
             self.closed = True
             self._post(None)
