@@ -49,4 +49,5 @@ class Forwarder:
             return
         peer = writer.get_extra_info("peername")
         peer = f"{peer[0]}:{peer[1]}" if peer else "local"
+        log.info("connection from %s on forward %d -> %s:%d", peer, f.id, f.target_host, f.target_port)
         s.channels[cid] = OutboundChannel(s, cid, f, peer, self.cfg.link.window, reader, writer)

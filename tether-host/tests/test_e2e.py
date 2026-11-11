@@ -260,6 +260,23 @@ class Forwards(unittest.IsolatedAsyncioTestCase):
             w.close()
         srv.close()
 
+    async def test_forward_connection_is_logged_when_it_opens(self):
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        fp = free_port()
+        async with Rig(make_cfg(free_port(), 9, forwards=[(fp, "127.0.0.1", tp)])):
+            with self.assertLogs("tether.forward", "INFO") as cm:
+                r, w = await asyncio.open_connection("127.0.0.1", fp)
+                w.write(b"GET / HTTP/1.1\r\n\r\n")
+                await asyncio.wait_for(r.read(-1), 5)
+                w.close()
+            self.assertTrue(any(f"on forward 1 -> 127.0.0.1:{tp}" in m for m in cm.output), cm.output)
+        srv.close()
+
     async def test_forward_large_both_ways(self):
         payload = os.urandom(1_200_000)
 

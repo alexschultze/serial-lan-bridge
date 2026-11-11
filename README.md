@@ -37,7 +37,7 @@ Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](AR
 | **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | compiles and links for the ESP32-S3 without warnings (ESP-IDF 6.1.0 via PlatformIO; 806 KB of a 3 MB slot, 15% RAM); **not yet run on a board** |
 | Hardware acceptance tests (ARCHITECTURE.md section 11) | not yet run: they need a board and the Windows PC |
 
-Tests today: 49 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
+Tests today: 50 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
 USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
 
 ## Requirements
