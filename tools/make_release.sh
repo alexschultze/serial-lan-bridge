@@ -38,8 +38,18 @@ PY
 )
 FW="$DIST/tether-node-$VERSION-esp32s3-n16r8.bin"
 # The image ends with the application: the `storage` partition (the USB drive) is not part of it and keeps its files.
-esptool --chip esp32s3 merge-bin --flash-mode qio --flash-size 16MB -o "$FW" \
+# Flash settings are kept exactly as the build wrote them: ESP-IDF puts DIO into the bootloader header even when QIO is
+# configured (the ROM loads the bootloader in DIO, the bootloader then switches to QIO). Forcing QIO here makes the ROM
+# fail to load the bootloader (`ets_loader.c 78`) and the chip resets in a loop.
+esptool --chip esp32s3 merge-bin --flash-mode keep --flash-freq keep --flash-size keep -o "$FW" \
     "$boot_off" "$B/bootloader.bin" "$part_off" "$B/partitions.bin" "$app_off" "$B/firmware.bin"
+python3 - "$B/bootloader.bin" "$FW" <<'PY'
+import sys
+built, merged = (open(p, "rb").read(4) for p in sys.argv[1:])
+if built != merged:
+    sys.exit(f"merged image header {merged.hex()} differs from the built bootloader's {built.hex()}")
+print(f"image header {merged.hex()} matches the built bootloader (flash mode {['QIO', 'QOUT', 'DIO', 'DOUT'][merged[2]]})")
+PY
 
 # ---- tether-host source zip ----------------------------------------------------------------------------------------
 STAGE="$BUILD/tether-host-$VERSION"
