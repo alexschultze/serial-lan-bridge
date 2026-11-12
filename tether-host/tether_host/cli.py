@@ -97,6 +97,8 @@ def cmd_status(args):
         print(f"wifi:  {node.get('ssid') or '-'}  ip {node.get('ip') or '-'}  rssi {node.get('rssi')}  host {node.get('hostname')}")
         print(f"       hotspot clients {node.get('ap_clients')}  channels {node.get('channels')}  heap free {node.get('heap_free')}")
         print(f"       counters {node.get('counters')}")
+        if node.get("drive") and node["drive"] != "off":
+            print(f"drive: 1 MB USB drive, currently used by the {'PC' if node['drive'] == 'pc' else 'node'}")
         if node.get("note"):
             print(f"wifi problem: {node['note']}")
     return 2 if stale else 0

@@ -1,4 +1,4 @@
-/* CDC-ACM link to tether-host over the native USB port (esp_tinyusb 1.x).
+/* CDC-ACM link to tether-host over the native USB port (esp_tinyusb 2.x), plus the USB drive (storage.c).
  *
  * Received bytes stay in TinyUSB's own FIFO until the net task reads them: when the net task falls behind, the FIFO fills
  * and USB itself makes the PC wait (no bytes are ever dropped). The receive callback only wakes the net task. */
@@ -15,7 +15,9 @@
 #include "esp_vfs_eventfd.h"
 #include "freertos/FreeRTOS.h"
 #include "tinyusb.h"
-#include "tusb_cdc_acm.h"
+#include "tinyusb_cdc_acm.h"
+#include "tinyusb_default_config.h"
+#include "storage.h"
 
 static const char *TAG = "usb";
 static int evfd = -1;
@@ -64,31 +66,28 @@ int usb_link_init(void)
         "tether-node",                /* 2: product: the host recognises the node by this string */
         serial,                       /* 3: serial number */
         "tether link",                /* 4: CDC interface */
+        "tether storage",             /* 5: MSC interface (the USB drive) */
     };
-    const tinyusb_config_t tusb = {
-        .device_descriptor = NULL,    /* default Espressif VID/PID from Kconfig */
-        .string_descriptor = strings,
-        .string_descriptor_count = sizeof strings / sizeof strings[0],
-        .external_phy = false,
-        .configuration_descriptor = NULL,
-    };
+    /* device and configuration descriptors: defaults from Kconfig (VID:PID 1209:0001, CDC + MSC, see sdkconfig.defaults) */
+    tinyusb_config_t tusb = TINYUSB_DEFAULT_CONFIG();
+    tusb.descriptor.string = strings;
+    tusb.descriptor.string_count = sizeof strings / sizeof strings[0];
+    storage_init();   /* before the driver: the drive's storage must exist when the MSC class starts */
     r = tinyusb_driver_install(&tusb);
     if (r != ESP_OK) {
         ESP_LOGE(TAG, "tinyusb_driver_install failed: %s", esp_err_to_name(r));
         return -1;
     }
     const tinyusb_config_cdcacm_t acm = {
-        .usb_dev = TINYUSB_USBDEV_0,
         .cdc_port = TINYUSB_CDC_ACM_0,
-        .rx_unread_buf_sz = 64,
         .callback_rx = rx_cb,
         .callback_rx_wanted_char = NULL,
         .callback_line_state_changed = line_state_cb,
         .callback_line_coding_changed = NULL,
     };
-    r = tusb_cdc_acm_init(&acm);
+    r = tinyusb_cdcacm_init(&acm);
     if (r != ESP_OK) {
-        ESP_LOGE(TAG, "tusb_cdc_acm_init failed: %s", esp_err_to_name(r));
+        ESP_LOGE(TAG, "tinyusb_cdcacm_init failed: %s", esp_err_to_name(r));
         return -1;
     }
     ESP_LOGI(TAG, "CDC-ACM up, product tether-node, serial %s", serial);

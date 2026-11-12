@@ -2,10 +2,24 @@ CONFIG_IDF_TARGET="esp32s3"
 
 # USB: one CDC-ACM interface through TinyUSB on the native USB port; the console stays on UART0
 CONFIG_TINYUSB_CDC_ENABLED=y
-CONFIG_TINYUSB_CDC_MAX_PORTS=1
+CONFIG_TINYUSB_CDC_COUNT=1
 CONFIG_TINYUSB_CDC_RX_BUFSIZE=2048
 CONFIG_TINYUSB_CDC_TX_BUFSIZE=2048
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# USB identity 1209:0001 (pid.codes VID, test PID: fine for own use, register a PID before distributing).
+# Same value as TETHER_VID/TETHER_PID in tether-host/tether_host/link.py. Change the PID whenever the set of USB functions
+# changes: Windows caches the interface layout per VID:PID.
+CONFIG_TINYUSB_DESC_USE_ESPRESSIF_VID=n
+CONFIG_TINYUSB_DESC_CUSTOM_VID=0x1209
+CONFIG_TINYUSB_DESC_USE_DEFAULT_PID=n
+CONFIG_TINYUSB_DESC_CUSTOM_PID=0x0001
+
+# USB drive: 1 MB FAT in the `storage` partition with wear levelling, 512-byte sectors as in Espressif's USB drive example
+CONFIG_TINYUSB_MSC_ENABLED=y
+CONFIG_WL_SECTOR_SIZE_512=y
+CONFIG_WL_SECTOR_MODE_PERF=y
+CONFIG_FATFS_LFN_HEAP=y
 
 # lwIP: 16 channels + 4 listeners + margin (verify the limit of the IDF version); larger TCP buffers for throughput
 CONFIG_LWIP_MAX_SOCKETS=24
@@ -14,12 +28,22 @@ CONFIG_LWIP_TCP_WND_DEFAULT=11488
 CONFIG_VFS_SUPPORT_SELECT=y
 
 # Robustness: a crash reboots, which the host detects through the new session id
-CONFIG_ESP_SYSTEM_PANIC_REBOOT=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
-# Typical ESP32-S3 module; raise it to match your board (4 MB is enough for this firmware)
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Target module: ESP32-S3-WROOM-1 N16R8 (16 MB quad flash, 8 MB octal PSRAM).
+# Other modules: set the flash size to match, and for R2/R8V or no PSRAM change or remove the SPIRAM lines below
+# (a wrong PSRAM mode makes the chip fail at boot).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# 8 MB octal PSRAM, added to the heap: small allocations stay in internal RAM (faster), larger ones and overflow go to PSRAM,
+# so the per-connection buffers fit even with link.window = 16384 on all 16 connections
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
 
 # One 3 MB application slot (no OTA by design); smaller code
 CONFIG_PARTITION_TABLE_CUSTOM=y

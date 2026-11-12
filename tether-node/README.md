@@ -5,7 +5,8 @@ ESP32-S3 firmware (ESP-IDF, C; verified to build with ESP-IDF 6.1.0 through Plat
 ```
 components/tether_core/   portable C, no ESP-IDF dependency: framing, JSON, config validation, the engine
                           (listeners, channels, flow control, control protocol). Builds and is tested on Linux.
-main/                     ESP32 glue: usb_link (TinyUSB CDC-ACM), wifi_mgr (station, hotspot, mDNS), platform_esp, app_main
+main/                     ESP32 glue: usb_link (TinyUSB CDC-ACM), storage (1 MB USB drive), wifi_mgr (station, hotspot, mDNS),
+                          platform_esp, app_main
 sim/                      Linux simulator: the same engine behind a pseudo-terminal (used by the host's end-to-end tests)
 tests/test_core.c         C unit tests; shared byte vectors in ../testvectors/frames.json
 ```

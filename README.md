@@ -10,6 +10,7 @@ Connect a **Wi-Fi network** and a **Windows PC's network** through an **ESP32-S3
 * **No drivers on the PC.** The ESP32-S3 appears as a plain USB serial (COM) port that Windows 11 handles itself.
 * **No network adapter on the PC.** Translation happens per connection (a NAT at connection level): the API sees only the
   PC; the Wi-Fi network sees only the ESP32.
+* **A 1 MB USB drive** on the same cable (FAT, in the ESP32's flash) for files; Windows mounts it like a USB stick.
 * **One TOML file** configures Wi-Fi, an optional fallback hotspot and the port mappings, and is applied on every start.
   The ESP32 stores no configuration and no passwords.
 
@@ -37,13 +38,15 @@ Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](AR
 | **tether-node** ESP32 glue (TinyUSB CDC, Wi-Fi station/hotspot, mDNS) | compiles and links for the ESP32-S3 without warnings (ESP-IDF 6.1.0 via PlatformIO; 806 KB of a 3 MB slot, 15% RAM); **not yet run on a board** |
 | Hardware acceptance tests (ARCHITECTURE.md section 11) | not yet run: they need a board and the Windows PC |
 
-Tests today: 51 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
+Tests today: 55 Python tests, 207 C checks. Measured over a pseudo-terminal (no USB): about 1.7 MB/s of combined throughput; the
 USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
 
 ## Requirements
 
-* ESP32-S3 board **whose USB port is the chip's native USB** (GPIO19/20), not a CP210x/CH340 UART bridge. In Windows Device
-  Manager the board should report hardware ID `VID_303A`. (Boards with a second "UART" port: use the one labelled USB.)
+* ESP32-S3 board, set up for an **ESP32-S3-WROOM-1 N16R8** module (16 MB flash, 8 MB PSRAM; other modules: adjust
+  `tether-node/sdkconfig.defaults`). Connect the PC to the **native USB port** (GPIO19/20, usually labelled `USB`). On boards with two
+  USB-C ports the other one (`COM`/`UART`, a CH340/CH343 bridge) shows the firmware's console log and is handy for flashing.
+  After flashing, Device Manager shows the native port as `USB\VID_1209&PID_0001`: a COM port and a 1 MB USB drive.
 * Bridge PC: Windows 11 (Linux/macOS also work), Python 3.11+, `pip install pyserial` (a library, no driver).
 * Network B with DHCP and WPA2/WPA3 (2.4 GHz). The API reachable from the PC.
 * To build the firmware: PlatformIO (`pip install platformio`) or ESP-IDF 5.2 or newer, on Linux or Windows.

@@ -11,6 +11,7 @@
 #include "soc/rtc_cntl_reg.h"
 #include "usb_link.h"
 #include "wifi_mgr.h"
+#include "storage.h"
 
 static const char *TAG = "node";
 static int wake_fd = -1;
@@ -28,7 +29,11 @@ static uint32_t p_random(void *c) { return esp_random(); }
 static int p_wifi(void *c, const tc_wifi_cfg *w, char *e, size_t n) { return wifi_mgr_apply(w, e, n); }
 static void p_lst(void *c, const tc_config *cfg) { wifi_mgr_listeners(cfg); }
 static int p_subnet(void *c, uint32_t l, uint32_t *n, uint32_t *m) { return wifi_mgr_subnet(l, n, m); }
-static void p_status(void *c, tc_status *s) { wifi_mgr_status(s); }
+static void p_status(void *c, tc_status *s)
+{
+    wifi_mgr_status(s);
+    s->drive = storage_owner();
+}
 
 static void p_reboot(void *c, int mode)
 {

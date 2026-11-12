@@ -7,9 +7,12 @@ import threading
 
 log = logging.getLogger("tether.link")
 
+# USB identity of tether-node: pid.codes vendor ID with a test product ID (fine for own use; register a PID before
+# distributing). Must match CONFIG_TINYUSB_DESC_CUSTOM_VID/PID in tether-node/sdkconfig.defaults.
+TETHER_VID = 0x1209
+TETHER_PID = 0x0001
 ESPRESSIF_VID = 0x303A
-ROM_BOOTLOADER_PID = 0x1001   # the chip's ROM USB-Serial/JTAG, not our application
-TETHER_PID = 0x4001           # esp_tinyusb default; verify, see ARCHITECTURE.md section 14
+ROM_BOOTLOADER_PID = 0x1001   # the chip's ROM USB-Serial/JTAG: a board in download mode or without tether firmware
 
 
 class LinkClosed(Exception):
@@ -60,6 +63,9 @@ def loopback_pair():
     return a, b
 
 
+_warned = set()   # ports already reported as being in download mode (the search repeats on every reconnect attempt)
+
+
 def find_ports(selector="auto", serial_number=""):
     """Return the serial ports that look like a tether-node (or the explicit one)."""
     from serial.tools import list_ports
@@ -68,16 +74,14 @@ def find_ports(selector="auto", serial_number=""):
     out = []
     for p in list_ports.comports():
         ident = f"{p.device} ({p.vid or 0:04X}:{p.pid or 0:04X} {p.product or p.description or ''})"
-        if p.vid != ESPRESSIF_VID:
-            log.debug("port %s: not an Espressif device", ident)
-            continue
-        if p.pid == ROM_BOOTLOADER_PID:
-            log.warning("port %s is an ESP32 in ROM/download mode or without tether firmware: flash tether-node, "
+        if p.vid == ESPRESSIF_VID and p.pid == ROM_BOOTLOADER_PID:
+            (log.debug if p.device in _warned else log.warning)("port %s is an ESP32 in ROM/download mode or without tether firmware: flash tether-node, "
                         "then reset the board", ident)
+            _warned.add(p.device)
             continue
-        product = (p.product or p.description or "").lower()
-        if "tether" not in product and p.pid != TETHER_PID:
-            log.debug("port %s: Espressif, but not a tether-node", ident)
+        # Windows' port list usually lacks the USB product string, so the VID:PID is what identifies the node there
+        if (p.vid, p.pid) != (TETHER_VID, TETHER_PID) and "tether" not in (p.product or "").lower():
+            log.debug("port %s: not a tether-node", ident)
             continue
         if serial_number and (p.serial_number or "") != serial_number:
             log.debug("port %s: serial number %s does not match host.serial", ident, p.serial_number)

@@ -14,6 +14,7 @@ between the PC and an ESP32-S3. Hard requirements, all of which shaped the desig
 | # | Requirement | Consequence |
 |---|---|---|
 | R1 | Windows 11 PC, **no additional drivers** | ESP32-S3 uses its native USB as **CDC-ACM** (inbox `usbser.sys`). Python uses `pyserial` (a library, not a driver). |
+| R10 | A small **file storage** (1 MB, FAT) the PC can use | The same USB device also offers a USB drive (mass storage, inbox Windows driver), section 5.4. |
 | R2 | The device must **not appear as a network adapter** in Windows | No USB Ethernet/RNDIS/NCM. No IP interface on the PC for the bridge, so no packet-level NAT or L2 bridge is possible. |
 | R3 | Behaves like a **NAT** (neither network learns the other's addresses) | Connection-level NAT: destination NAT on the node (listener port to target) and source NAT (the API sees the PC; network B sees the node). |
 | R4 | The ESP32 **joins a network by DHCP**, and can **advertise a hotspot** when none is found | Wi-Fi STA with AP fallback, section 7. |
@@ -109,11 +110,11 @@ serial-lan-bridge/
 │   │   ├── forward.py           local listening ports for [[forward]], channel id allocation
 │   │   └── cli.py               run | status | ports | check-config | bootloader
 │   └── tests/                   protocol, fake_node.py + test_e2e.py (Python node), test_sim_e2e.py (C engine)
-└── tether-node/                 ESP-IDF project (C); platformio.ini, partitions.csv, sdkconfig.defaults
+└── tether-node/                 ESP-IDF project (C); platformio.ini, partitions.csv (with the 1 MB `storage` partition), sdkconfig.defaults
     ├── CMakeLists.txt, sdkconfig.defaults
     ├── components/tether_core/  portable C without ESP-IDF dependencies: tc_proto (COBS, CRC, deframer),
     │                            tc_json, tc_config (parse/validate), tc_engine (listeners, channels, flow control, control protocol)
-    ├── main/                    ESP32 glue: usb_link (TinyUSB CDC-ACM), wifi_mgr (station/hotspot/mDNS), platform_esp, app_main
+    ├── main/                    ESP32 glue: usb_link (TinyUSB CDC-ACM), storage (USB drive), wifi_mgr (station/hotspot/mDNS), platform_esp, app_main
     ├── sim/                     Linux simulator: the same engine behind a pseudo-terminal; Makefile for tests and simulator
     └── tests/test_core.c        C unit tests
 ```
@@ -297,15 +298,22 @@ retrying on reconnect.
 
 ### 5.1 Framework and build
 
-ESP-IDF (C). Verified build: PlatformIO `espressif32@8.0.0` = ESP-IDF 6.1.0, managed components `esp_tinyusb` 1.7.6 and `mdns` 1.14.1
+ESP-IDF (C). Verified build: PlatformIO `espressif32@8.0.0` = ESP-IDF 6.1.0, managed components `esp_tinyusb` 2.4.0 and `mdns` 1.14.1 (esp_tinyusb 1.x does not build its mass-storage part against ESP-IDF 6)
 (fetched from the Espressif component registry through `main/idf_component.yml`), `platformio.ini` in `tether-node/`. Plain `idf.py`
 uses the same `CMakeLists.txt` and sources but has not been exercised. Other components: `esp_wifi`, `esp_netif`, `lwip`, `esp_timer`. Arduino, ESPHome and MicroPython were rejected (section 13). Key `sdkconfig.defaults`:
 
-* TinyUSB device with a single CDC-ACM interface, custom descriptors: VID/PID of `esp_tinyusb` defaults
-  (`0x303A`/`0x4001`: Espressif VID, TinyUSB default PID `0x4000 + CDC bit`, read from the component source; confirm on hardware), product string `tether-node`, serial number = base MAC. TX/RX buffers ≥ 2048.
+* Target module: **ESP32-S3-WROOM-1 N16R8** (16 MB quad flash, 8 MB octal PSRAM). PSRAM is added to the heap: allocations up to
+  16 KB stay in internal RAM, larger ones and any overflow go to PSRAM, so even `link.window = 16384` on all 16 connections fits.
+  For another module, change the flash size and the `CONFIG_SPIRAM*` lines (a wrong PSRAM mode makes the chip fail at boot).
+* TinyUSB composite device: one CDC-ACM interface (the serial link) and one MSC interface (the USB drive, 5.4). **USB identity
+  `1209:0001`**: the pid.codes vendor ID with its test product ID, set through Kconfig and mirrored in `tether-host`
+  (`TETHER_VID`/`TETHER_PID` in `link.py`). Fine for own use; a project that is distributed registers its own PID at pid.codes (open
+  source only) or asks Espressif for one. Windows caches the interface layout per VID:PID, so the PID must change whenever the set of
+  USB functions changes. Strings: manufacturer `tether`, product `tether-node`, serial number = Wi-Fi MAC. CDC TX/RX buffers 2048.
 * Console: UART0 (or disabled), **not** USB. ESP log output is additionally sent as `LOG` frames while a host is attached.
 * `CONFIG_LWIP_MAX_SOCKETS` = 24 (16 channels + 4 listeners + margin; accepted by IDF 6.1.0); TCP send/receive buffers and window raised toward 16 KiB (start from the IDF iperf example).
-* Wi-Fi power save off (`WIFI_PS_NONE`); task watchdog on; `PANIC_REBOOT` (a crash yields a new `session`, which the host detects).
+* Wi-Fi power save off (`WIFI_PS_NONE`); task watchdog on; `PANIC_PRINT_REBOOT` (a crash yields a new `session`, which the host detects).
+* Every setting in `sdkconfig.defaults` was checked to appear in the generated configuration (an unknown name is silently ignored).
 * No persistent configuration: NVS is initialised only because the Wi-Fi driver calibration data needs it.
 
 ### 5.2 Tasks
@@ -340,6 +348,16 @@ timestamps. Client sockets use non-blocking mode, `TCP_NODELAY`, keepalive (idle
   A forward id that disappears or changes in a CONFIG resets its open channels. The endpoint is always taken from the node's
   configuration; the host cannot ask for an arbitrary address.
 * **No other network services.** The node listens only on the configured ports; there is no web UI, OTA or debug server.
+
+### 5.4 USB drive (file storage)
+
+* Partition `storage` (data/fat, 1 MB at `0x310000`), wear levelling with 512-byte sectors (as in Espressif's USB drive example),
+  FAT with long file names. Formatted automatically the first time.
+* One owner at a time, switched by esp_tinyusb: while the PC has the device enumerated the volume is the PC's USB drive; otherwise it
+  is mounted at `/data` for the firmware. The firmware does not use it yet; it is storage for the PC.
+* STATUS reports the owner (`"drive": "pc" | "node" | "off"`), shown by `tether-host status`.
+* It shares the USB full-speed link with the serial port: copying large files slows the bridge traffic down while it runs. As
+  with any USB stick, unplugging during a write can corrupt the FAT; eject it in Windows first.
 
 ## 6. Configuration
 
@@ -492,7 +510,8 @@ Runs as a normal user (no admin rights, no drivers). Works on Windows 11 and Lin
 
 * **Transport** abstraction with a serial implementation and an in-memory loopback implementation. Real code and
   tests use the same session logic.
-* **Serial transport:** discovery through `serial.tools.list_ports` (VID `0x303A`, not the ROM bootloader PID `0x1001`, and product containing `tether` or PID `0x4001`; or the
+* **Serial transport:** discovery through `serial.tools.list_ports` (USB ID `1209:0001`, or a product string containing `tether` where the OS reports
+  one; Windows' port list usually lacks it; an ESP32 in ROM download mode, `303A:1001`, is reported once with a hint; or the
   configured port; optionally filtered by USB serial number; several matches and no selector is an error that lists them). A reader thread
   (`read(max(1, in_waiting))`, short timeout) pushes bytes to the event loop; a writer thread drains an outbound queue
   (so asyncio never blocks on the COM port). Receive/transmit buffers are enlarged (`set_buffer_size`) on Windows. DTR/RTS stay at their defaults.
@@ -572,9 +591,10 @@ image as an artifact.
   ROM enumerates as a USB serial device that Windows binds with its inbox driver, `pio run -t upload --upload-port <port>` (or `idf.py -p <port> flash`, or `esptool`). After the app boots, it re-enumerates as `tether-node` on a (possibly different) COM port.
 * **Re-flash:** the application's USB port does not support esptool's automatic reset, so run `tether-host bootloader`
   (sends REBOOT mode 1) or repeat the manual BOOT procedure.
-* **Which port on the board:** the one wired to the chip's native USB (GPIO19/20). Ports behind a CP210x/CH340 UART
-  bridge are not usable (driver required, ≈ 0.3 MB/s). Single-port S3 boards are normally native USB; check that Device
-  Manager shows VID `303A`.
+* **Which port on the board:** the one wired to the chip's native USB (GPIO19/20), usually labelled `USB`. Ports behind a
+  CP210x/CH340/CH343 UART bridge (labelled `COM` or `UART`) are not usable for the bridge (driver may be required, ≈ 0.3 MB/s),
+  but on boards with **two USB-C ports** that second port is useful: it carries the UART0 console (firmware logs) and supports
+  esptool's automatic reset for flashing. After flashing, Device Manager shows the native port as `USB\VID_1209&PID_0001`.
 * **Debugging:** logs over UART0 and as `LOG` frames. The chip's built-in JTAG shares the USB pins with TinyUSB, so source-level
   debugging needs an external JTAG adapter or a development build that uses the built-in USB-Serial/JTAG instead of TinyUSB.
 * **Updates:** USB flashing only (no OTA, by design: no network services on the node).
@@ -597,18 +617,21 @@ image as an artifact.
 | Framework | ESP-IDF (C) | Arduino-ESP32 (less control of USB/lwIP), ESPHome (build-time config, own services, USB device support unclear; custom component would carry the whole product anyway), MicroPython (speed, memory, REPL conflicts), Rust (tooling cost) |
 | Host language | Python 3.11+, pyserial only | other languages: Python is the PC environment given by the requirement |
 | Hotspot | optional, WPA2 only, off unless configured | always-on or open AP (exposes the API) |
+| USB identity | `1209:0001` (pid.codes test PID), one constant on each side | Espressif VID with TinyUSB's default PID (shared by every ESP32 TinyUSB gadget, and it changes when USB functions are added); an arbitrary PID under Espressif's VID (may collide with an allocated product) |
+| File storage | USB drive (mass storage) on a 1 MB FAT partition, owner switched automatically | a network share (needs a network adapter, excluded by R2); files only through the serial protocol (needs a client tool) |
 | Transport security | none in v1 (documented) | TLS on the ESP32 (RAM, certificates, complexity); possible later |
 
 ## 14. Open points to verify during implementation
 
-1. Windows 11 enumerates the device as a plain "USB Serial Device" with no driver prompt, with the product string `tether-node` (the code compiles against esp_tinyusb 1.7.6; the PID is derived from its source).
+1. Windows 11 enumerates the composite device (`1209:0001`) as a "USB Serial Device" plus a USB drive with no driver prompt; the
+   drive's 512-byte sectors and the FAT format work in Explorer.
 2. RAM budget with 16 channels plus Wi-Fi AP+STA under load (the idle build uses 15% of RAM; `heap_free` in STATUS shows the rest).
 3. Real USB CDC throughput with `pyserial` on Windows 11 (target ≥ 0.8 MB/s) and the best CDC buffer sizes.
 4. Software reset into ROM download mode on the S3 (REBOOT mode 1) from running TinyUSB firmware.
 5. AP+STA behaviour (channel following, scan interruptions) with real access points.
 6. The node uses its own CRC-32 (`tc_crc32`, verified against the vectors), so no ESP-ROM function is needed.
-7. The ESP32 glue (`usb_link.c`, `wifi_mgr.c`, `platform_esp.c`) compiles and links against ESP-IDF 6.1.0 and esp_tinyusb 1.7.6, but has
-   never run: USB enumeration, throughput, Wi-Fi fallback and mDNS need a board.
+7. The ESP32 glue (`usb_link.c`, `wifi_mgr.c`, `platform_esp.c`) compiles and links against ESP-IDF 6.1.0 and esp_tinyusb 2.4.0, but has
+   never run: USB enumeration, the drive, throughput, PSRAM, Wi-Fi fallback and mDNS need a board.
 
 ## 15. Roadmap
 

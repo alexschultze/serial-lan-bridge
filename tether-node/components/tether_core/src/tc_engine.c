@@ -207,11 +207,11 @@ static void send_status(tc_engine *e)
     int n = snprintf(js, sizeof js,
                      "{\"state\":\"%s\",\"mode\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"hostname\":\"%s\","
                      "\"ap_clients\":%d,\"channels\":%d,\"uptime\":%u,\"counters\":{\"crc_errors\":%u,\"rx_overflow\":%u,"
-                     "\"tx_stalls\":%u,\"accepted\":%u,\"refused\":%u,\"opened\":%u,\"open_failed\":%u},\"heap_free\":%u,\"note\":\"%s\",\"version\":\"%s\"}",
+                     "\"tx_stalls\":%u,\"accepted\":%u,\"refused\":%u,\"opened\":%u,\"open_failed\":%u},\"heap_free\":%u,\"note\":\"%s\",\"drive\":\"%s\",\"version\":\"%s\"}",
                      state, st.mode, ssid, st.ip, st.rssi, host, st.ap_clients, nchannels(e),
                      (unsigned)((now_ms(e) - e->boot_ms) / 1000), (unsigned)e->cnt.crc_errors, (unsigned)e->cnt.rx_overflow,
                      (unsigned)e->cnt.tx_stalls, (unsigned)e->cnt.accepted, (unsigned)e->cnt.refused, (unsigned)e->cnt.opened,
-                     (unsigned)e->cnt.open_failed, (unsigned)st.heap_free, note, e->p.version ? e->p.version : "");
+                     (unsigned)e->cnt.open_failed, (unsigned)st.heap_free, note, st.drive ? st.drive : "off", e->p.version ? e->p.version : "");
     if (n > 0 && (size_t)n < sizeof js) {
         emit(e, TC_T_STATUS, 0, (const uint8_t *)js, (size_t)n, 1);
     }
