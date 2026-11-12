@@ -51,7 +51,29 @@ USB full-speed link is expected to cap this at 0.8 to 1 MB/s.
 * Network B with DHCP and WPA2/WPA3 (2.4 GHz). The API reachable from the PC.
 * To build the firmware: PlatformIO (`pip install platformio`) or ESP-IDF 5.2 or newer, on Linux or Windows.
 
-## Quick start
+## Install from a release
+
+Each release on GitHub (Releases page of this repository) has three files:
+
+| File | What it is |
+|---|---|
+| `tether-node-<version>-esp32s3-n16r8.bin` | firmware for an ESP32-S3-WROOM-1 N16R8 board, one image flashed at `0x0` |
+| `tether-host-<version>.zip` | tether-host sources with the configuration template `tether.example.toml` |
+| `SHA256SUMS.txt` | checksums |
+
+1. Flash: `pip install esptool`; hold BOOT while plugging the native USB port in (or run `tether-host bootloader` on a node that
+   already runs tether firmware); `esptool --chip esp32s3 --port COM5 write-flash 0x0 tether-node-<version>-esp32s3-n16r8.bin`;
+   press RESET. Files on the USB drive are kept; never run `esptool erase-flash`, which deletes them.
+2. Unpack the zip, `pip install .` in its folder, copy `tether.example.toml` to `tether.toml` and fill in every `<...>` value.
+3. `tether-host run --config tether.toml`
+
+Firmware and tether-host should come from the same release; tether-host warns when they differ.
+
+**Making a release** (maintainers): push a tag such as `v0.2.0` (or `v0.2.0-rc1` for a pre-release). The `release` workflow runs
+the tests, builds the files with `tools/make_release.sh` and publishes the GitHub release. The same script builds the files
+locally into `dist/` (needs PlatformIO and esptool).
+
+## Quick start (from source)
 
 1. **Build and flash the node** (once; Linux or Windows). With PlatformIO (`pip install platformio`), the toolchain the firmware is
    verified to build with:

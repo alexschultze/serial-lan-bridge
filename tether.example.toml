@@ -1,43 +1,45 @@
-# tether.example.toml: copy to tether.toml and edit. Applied to the node on every start.
-# Contains Wi-Fi passwords: restrict the file's permissions to your account.
+# tether.toml template. Copy it to tether.toml and replace every <...> value; `tether-host check-config` refuses the file
+# while a placeholder is left. The file is sent to the node on every start, so editing it and restarting tether-host is all
+# it takes to change a setting. It holds Wi-Fi passwords: keep it readable only by your own account.
 
-[host]                      # host-only, never sent to the node
-port            = "auto"    # "auto" (USB product "tether-node") or e.g. "COM7" / "/dev/ttyACM0"
-serial          = ""        # optional USB serial number, to pick one node when several are plugged in
+[host]                      # settings of the PC side; never sent to the node
+port            = "auto"    # "auto" finds the node by its USB ID (1209:0001), or e.g. "COM7" / "/dev/ttyACM0"
+serial          = ""        # optional: the node's USB serial number, to choose one when several are plugged in
 log_level       = "info"    # debug | info | warning | error
-connect_timeout = 5         # seconds, connecting to a listener target
+connect_timeout = 5         # seconds for connecting to a listener target
 
 [link]
-window             = 4096   # flow-control window per channel and direction (1024..16384)
-never_used_timeout = 30     # seconds; a connection that carried no data is reset; 0 disables
-idle_timeout       = 0      # seconds; 0 disables (recommended: the API's keep-alive ends idle connections)
+window             = 4096   # flow-control window per connection and direction, bytes (1024..16384)
+never_used_timeout = 30     # seconds; a connection that carried no data at all is reset; 0 disables
+idle_timeout       = 0      # seconds; 0 disables (recommended: the API's own keep-alive ends idle connections)
 
 [wifi]
 country = "DE"              # regulatory domain, two letters
 
-[[wifi.network]]            # 1 to 4 networks; the strongest visible one is joined
-ssid   = "NetworkB"
-psk    = "change-me-please"
+[[wifi.network]]            # 1 to 4 networks; the node joins the strongest one in range (2.4 GHz only)
+ssid   = "<Wi-Fi name>"
+psk    = "<Wi-Fi password>" # 8..63 characters; delete the line for an open network
 hidden = false
 
-[hotspot]                   # remove this whole section for no hotspot
-mode     = "auto"           # auto: only when no network can be joined; always: also while connected
-ssid     = ""               # empty: tether-XXXX (last two MAC bytes)
-psk      = "change-me-too"  # required, 8..63 characters (WPA2)
-fallback = 30               # seconds without a station connection before the hotspot starts
+# Optional fallback hotspot when no network can be joined. Off unless you remove the # in front of these lines.
+# [hotspot]
+# mode     = "auto"         # auto: only when no network can be joined; always: also while connected
+# ssid     = ""             # empty: tether-XXXX (last two bytes of the node's MAC address)
+# psk      = "<hotspot password, 8..63 characters>"
+# fallback = 30             # seconds without a network before the hotspot starts
 
-[[listener]]                # 1 to 4 listeners
+# Inbound: clients on the Wi-Fi network connect to the node; the PC connects them on to a server on its own network.
+[[listener]]                # 1 to 4 listeners (or none, if you only use forwards)
 id       = 1
-port     = 8000             # port opened on the node
-target   = "10.0.0.5:8000"  # where the PC connects: host:port on the PC's network
-protocol = "http"           # "http" (503/502/504 replies) or "tcp"
-allow    = ["192.168.1.0/24"]   # who may connect; omit for "same subnet as the node"
+port     = 8000             # port the node opens on the Wi-Fi network
+target   = "<API host or address on the PC's network>:8000"
+protocol = "http"           # "http": clients get 502/503/504 answers on failure; "tcp": the connection is just closed
+# allow  = ["192.168.1.0/24"]   # who may connect; without this line: only the node's own subnet
 
-# The other direction: a local port on the PC carried to an endpoint on the node's Wi-Fi network.
-# A program on the PC connects to 127.0.0.1:9000 and reaches 192.168.1.20:80 on the Wi-Fi network.
-[[forward]]                 # 0 to 8 forwards
-id              = 1
-listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0.0.1:<port>
-target          = "192.168.1.20:80"  # IPv4 address, or a name the node resolves on the Wi-Fi network
-protocol        = "http"             # "http" (503/502/504 replies to the local program) or "tcp"
-connect_timeout = 5                  # seconds; default host.connect_timeout
+# Outbound (optional): a port on the PC carried to an endpoint on the Wi-Fi network. Remove the # to use it.
+# [[forward]]               # 0 to 8 forwards
+# id              = 1
+# listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0.0.1:<port>
+# target          = "<device address or name on the Wi-Fi network>:80"
+# protocol        = "http"             # "http" or "tcp", as above
+# connect_timeout = 5                  # seconds; default host.connect_timeout

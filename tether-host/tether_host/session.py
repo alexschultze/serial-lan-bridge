@@ -7,6 +7,7 @@ import random
 import socket
 import time
 
+from . import __version__
 from . import protocol as P
 from .bridge import Channel
 from .forward import Forwarder
@@ -21,7 +22,7 @@ CONFIG_RETRY = 5.0
 CONFIG_TRIES = 3
 RESEND_MIN = 5.0          # minimum time between CONFIG pushes triggered by node HELLOs
 BACKOFF = (0.5, 1, 2, 5)
-VERSION = "tether-host 0.1"
+VERSION = f"tether-host {__version__}"
 
 
 class SessionError(Exception):
@@ -243,6 +244,7 @@ class Session:
         if changed or h["state"] == P.NodeState.NEEDS_CONFIG:
             if changed:
                 log.info("node %s connected (session %08x)", h["version"], h["session"])
+                self._check_versions(h["version"])
             for ch in list(self.channels.values()):
                 ch.abort()
             self._node_session = h["session"]
@@ -250,6 +252,14 @@ class Session:
             now = time.monotonic()
             if changed or now - self._last_config >= RESEND_MIN:
                 self._push_config()
+
+    @staticmethod
+    def _check_versions(node_version):
+        """Warn when firmware and host come from different releases (development builds are not compared)."""
+        kind, _, ver = node_version.partition(" ")
+        if kind == "tether-node" and ver not in ("", "dev") and __version__ != "dev" and ver != __version__:
+            log.warning("firmware %s and tether-host %s come from different releases; flash and install the same version",
+                        ver, __version__)
 
     def _push_config(self):
         self._last_config = time.monotonic()

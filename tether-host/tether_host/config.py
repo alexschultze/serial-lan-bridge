@@ -2,6 +2,7 @@
 import ipaddress
 import json
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -186,8 +187,24 @@ def _hostport(problems, where, v, default_host=None):
     return host, n
 
 
+PLACEHOLDER = re.compile(r"<[^<>]+>")
+
+
+def _placeholders(problems, value, where=""):
+    """Report every <...> value left over from the template."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _placeholders(problems, v, f"{where}.{k}" if where else k)
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            _placeholders(problems, v, f"{where}[{i}]")
+    elif isinstance(value, str) and PLACEHOLDER.search(value):
+        problems.append(f"{where} still holds the template placeholder {value!r}: replace it with your value")
+
+
 def parse_config(raw: dict) -> Config:
     p = []
+    _placeholders(p, raw)
     h = raw.get("host", {})
     ct = h.get("connect_timeout", 5)
     if isinstance(ct, bool) or not isinstance(ct, (int, float)):

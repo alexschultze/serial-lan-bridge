@@ -1,6 +1,6 @@
 [project]
 name = "tether-host"
-version = "0.1.0"
+dynamic = ["version"]
 description = "PC side of serial-lan-bridge: tunnels Wi-Fi client connections from a tether-node (ESP32-S3) over a USB serial port to an HTTP API"
 requires-python = ">=3.11"
 dependencies = ["pyserial>=3.5"]
@@ -14,3 +14,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["tether_host"]
+
+[tool.setuptools.dynamic]
+version = {attr = "tether_host.__version__"}

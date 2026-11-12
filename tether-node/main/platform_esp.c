@@ -61,7 +61,7 @@ void platform_esp_fill(tc_platform *p)
         fcntl(wake_fd, F_SETFL, O_NONBLOCK);
     }
     *p = (tc_platform){
-        .version = "tether-node 0.1",
+        .version = "tether-node " TETHER_VERSION,   /* from the git tag, see main/CMakeLists.txt */
         .link_fd = usb_link_fd(),
         .wake_fd = wake_fd,
         .wake = p_wake,

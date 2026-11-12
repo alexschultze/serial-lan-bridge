@@ -98,6 +98,7 @@ serial-lan-bridge/
 ├── README.md
 ├── ARCHITECTURE.md              this file
 ├── tether.example.toml          annotated example configuration
+├── tools/                       make_release.sh (release files), release_notes.md (template of the release text)
 ├── testvectors/                 frames.json (shared by Python and C tests), make_vectors.py
 ├── tether-host/                 Python 3.11+, depends on pyserial only
 │   ├── pyproject.toml           entry point `tether-host`, `python -m tether_host`
@@ -622,6 +623,21 @@ image as an artifact.
 * **Debugging:** logs over UART0 and as `LOG` frames. The chip's built-in JTAG shares the USB pins with TinyUSB, so source-level
   debugging needs an external JTAG adapter or a development build that uses the built-in USB-Serial/JTAG instead of TinyUSB.
 * **Updates:** USB flashing only (no OTA, by design: no network services on the node).
+* **Distribution:** GitHub Releases. Pushing a tag `vX.Y.Z` (or `vX.Y.Z-a1/-b1/-rc1`, published as a pre-release) runs
+  `.github/workflows/release.yml`: tests, then `tools/make_release.sh X.Y.Z`, then `gh release create` with three files:
+  * `tether-node-X.Y.Z-esp32s3-n16r8.bin`: one merged image (bootloader at `0x0`, partition table at `0x8000`, app at `0x10000`, offsets
+    read from the build), flashed at `0x0`. It ends with the application, so the `storage` partition and the files on the USB drive
+    survive an update; `esptool erase-flash` would delete them. The NVS area inside the image range is reset, which only costs the Wi-Fi
+    driver a recalibration (the node stores nothing else).
+  * `tether-host-X.Y.Z.zip`: the `tether_host` package, `pyproject.toml`, a short README and `tether.example.toml`; `pip install .` in it.
+  * `SHA256SUMS.txt`.
+* **Versions:** the tag is the single source. The firmware gets it through `TETHER_VERSION` at build time (`"tether-node X.Y.Z"` in HELLO,
+  `"dev"` for local builds); the zip gets it stamped into `tether_host.__version__`, which `pyproject.toml` reads. tether-host logs a
+  warning when the node's firmware comes from another release. Versions are limited to `X.Y.Z` with an optional `-aN/-bN/-rcN`, which
+  is valid for both the firmware string and Python packaging (PEP 440).
+* **Template:** `tether.example.toml` marks every value to fill in as `<...>`; `check-config` refuses the file until none is left, and
+  optional parts (hotspot, forwards) are commented out, so an unedited copy can never start a hotspot with a published password.
+  Tests check the template stays that way.
 
 ## 13. Decision log
 

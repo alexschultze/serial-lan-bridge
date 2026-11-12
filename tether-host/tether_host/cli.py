@@ -128,6 +128,9 @@ def main(argv=None):
                             ("bootloader", cmd_bootloader, "restart the node into download mode")):
         sp = sub.add_parser(name, help=help_)
         sp.add_argument("--port", help="serial port, overrides host.port")
+        # also accepted after the command (`tether-host run --config x.toml`); SUPPRESS keeps a value given before it
+        sp.add_argument("--config", "-c", default=argparse.SUPPRESS, help="path of tether.toml")
+        sp.add_argument("--log-level", default=argparse.SUPPRESS, help="debug|info|warning|error")
         sp.set_defaults(fn=fn)
     args = ap.parse_args(argv)
     level = args.log_level
