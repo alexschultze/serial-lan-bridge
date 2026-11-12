@@ -51,12 +51,11 @@ int usb_link_init(void)
         ESP_LOGE(TAG, "eventfd registration failed: %s", esp_err_to_name(r));
         return -1;
     }
-    evfd = eventfd(0, 0);
+    evfd = eventfd(0, 0);   /* never blocks on read in ESP-IDF: an empty eventfd reads as 0 */
     if (evfd < 0) {
         ESP_LOGE(TAG, "eventfd() failed");
         return -1;
     }
-    fcntl(evfd, F_SETFL, O_NONBLOCK);
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(serial, sizeof serial, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);

@@ -30,6 +30,8 @@ CONFIG_VFS_SUPPORT_SELECT=y
 # Robustness: a crash reboots, which the host detects through the new session id
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
 CONFIG_ESP_TASK_WDT_EN=y
+# a task that hogs a CPU (e.g. a loop that never ends) reboots the node instead of hanging it; the host reconnects
+CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
 # Target module: ESP32-S3-WROOM-1 N16R8 (16 MB quad flash, 8 MB octal PSRAM).

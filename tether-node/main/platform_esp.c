@@ -56,10 +56,7 @@ static void p_log(void *c, int level, const char *m)
 
 void platform_esp_fill(tc_platform *p)
 {
-    wake_fd = eventfd(0, 0);
-    if (wake_fd >= 0) {
-        fcntl(wake_fd, F_SETFL, O_NONBLOCK);
-    }
+    wake_fd = eventfd(0, 0);   /* ESP-IDF eventfds never block on read (an empty one reads as 0), so no O_NONBLOCK needed */
     *p = (tc_platform){
         .version = "tether-node " TETHER_VERSION,   /* from the git tag, see main/CMakeLists.txt */
         .link_fd = usb_link_fd(),

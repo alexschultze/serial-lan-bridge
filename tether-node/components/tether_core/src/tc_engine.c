@@ -939,9 +939,11 @@ int tc_engine_poll(tc_engine *e, int timeout_ms)
     uint32_t now = now_ms(e);
 
     if (e->p.wake && e->p.wake_fd >= 0 && FD_ISSET(e->p.wake_fd, &rs)) {
-        uint64_t junk;   /* 8 bytes: an eventfd read must be exactly that size; a pipe simply yields what is there */
-        while (read(e->p.wake_fd, &junk, sizeof junk) > 0) {
-        }
+        /* Read once, never in a loop: an ESP-IDF eventfd read always succeeds (it returns 0 when nothing is pending
+         * instead of failing with EAGAIN), so "read until empty" never ends there and hung the node. One read clears
+         * an eventfd; anything left in a pipe (the Linux simulator) makes select() report it again next time. */
+        uint64_t junk;   /* 8 bytes: an eventfd read must be exactly that size */
+        (void)!read(e->p.wake_fd, &junk, sizeof junk);
     }
     resolver_results(e);
     if (e->p.link_fd < 0 || FD_ISSET(e->p.link_fd, &rs)) {

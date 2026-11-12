@@ -291,6 +291,27 @@ class SimForwards(unittest.IsolatedAsyncioTestCase):
             w.close()
         srv.close()
 
+    async def test_forward_by_name_with_an_eventfd_wakeup(self):
+        """Regression: the node hung on its first DNS lookup because it read its wake-up fd in a loop (ESP-IDF eventfds
+        never report 'empty'). With a blocking eventfd the old loop blocks the simulator the same way."""
+        async def api(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            w.close()
+        srv, tp = await echo_server(api)
+        fp = free_port()
+        async with SimRig(make_cfg(free_port(), 9, forwards=[(fp, "localhost", tp)]), env={"SIM_WAKE_EVENTFD": "1"}) as rig:
+            for _ in range(3):   # several lookups in a row, and the link must stay alive afterwards
+                r, w = await asyncio.open_connection("127.0.0.1", fp)
+                w.write(b"GET / HTTP/1.1\r\n\r\n")
+                self.assertTrue((await asyncio.wait_for(r.read(-1), 8)).endswith(b"ok"))
+                w.close()
+            await asyncio.sleep(2.5)                     # a few PING/PONG rounds
+            self.assertTrue(rig.session.running.is_set())
+            self.assertEqual(rig.opens, 1)               # never reconnected
+        srv.close()
+
     async def test_forward_large_both_ways(self):
         payload = os.urandom(1_500_000)
 

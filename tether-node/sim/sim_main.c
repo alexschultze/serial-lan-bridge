@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -17,11 +18,18 @@
 static int master = -1;
 static int wake_pipe[2] = {-1, -1};
 
+static int wake_is_eventfd;
+
 static void sim_wake(void *c)
 {
     (void)c;
-    char b = 1;
-    (void)!write(wake_pipe[1], &b, 1);
+    if (wake_is_eventfd) {
+        uint64_t one = 1;
+        (void)!write(wake_pipe[0], &one, sizeof one);
+    } else {
+        char b = 1;
+        (void)!write(wake_pipe[1], &b, 1);
+    }
 }
 
 static uint32_t sim_millis(void *c)
@@ -98,9 +106,17 @@ int main(void)
     cfmakeraw(&t);
     tcsetattr(slave, TCSANOW, &t);
     fcntl(master, F_SETFL, fcntl(master, F_GETFL, 0) | O_NONBLOCK);
-    if (pipe(wake_pipe) != 0) { perror("pipe"); return 1; }
-    fcntl(wake_pipe[0], F_SETFL, fcntl(wake_pipe[0], F_GETFL, 0) | O_NONBLOCK);
-    fcntl(wake_pipe[1], F_SETFL, fcntl(wake_pipe[1], F_GETFL, 0) | O_NONBLOCK);
+    if (getenv("SIM_WAKE_EVENTFD")) {
+        /* a blocking eventfd: a second read with nothing pending blocks forever, the way an ESP-IDF eventfd read never
+         * ends a drain loop; either way the engine must read the wake-up fd only once per wake-up */
+        wake_is_eventfd = 1;
+        wake_pipe[0] = eventfd(0, 0);
+        if (wake_pipe[0] < 0) { perror("eventfd"); return 1; }
+    } else {
+        if (pipe(wake_pipe) != 0) { perror("pipe"); return 1; }
+        fcntl(wake_pipe[0], F_SETFL, fcntl(wake_pipe[0], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(wake_pipe[1], F_SETFL, fcntl(wake_pipe[1], F_GETFL, 0) | O_NONBLOCK);
+    }
     printf("PTY %s\n", path);
     fflush(stdout);
 
