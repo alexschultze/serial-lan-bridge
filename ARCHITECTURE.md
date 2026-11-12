@@ -574,14 +574,38 @@ In-flight streaming responses cannot be resumed after a fault; clients retry.
 | Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config; forwards by IP and by name (resolver thread), 1.5 MB both ways, refused and unresolvable endpoints, 8 outbound plus 8 inbound sharing the 16 channels | `tether-host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
 | Hardware | checklist below | a board plus the bridge PC |
 
-Hardware acceptance checklist: (1) fresh Windows 11 without added drivers: board enumerates as one COM port, "USB Serial Device",
-no driver prompt; (2) `tether-host run` configures the node; (3) the OpenAI SDK streams a chat completion from a Wi-Fi client to
-the API, token by token; (4) 16 parallel requests, the 17th gets 503; (5) 100 MB transfer: sustained ≥ 0.8 MB/s; (6) unplug/replug
-during a stream: recovery without restarting the host; (7) host killed: node answers 503 within 10 s; (8) Wi-Fi AP powered
-off then on: reconnect; (9) unknown SSID and `[hotspot]` set: hotspot appears after `fallback`, client reaches the API through it;
-(10) 24 h soak with periodic requests: no heap growth in STATUS.
+Hardware acceptance checklist (board: ESP32-S3-WROOM-1 N16R8, PC: Windows 11 without added drivers):
 
-CI (`.github/workflows/ci.yml`): Python and C tests on Linux; a second job builds the firmware with ESP-IDF and uploads the
+*Boot and USB*
+1. The board boots with PSRAM enabled (UART console on the `COM` port shows no PSRAM error and no reboot loop).
+2. The native `USB` port enumerates as `USB\VID_1209&PID_0001` with two functions, a "USB Serial Device" (COM port) and a USB drive,
+   with no driver prompt. `tether-host ports` marks the COM port.
+
+*Bridge*
+3. `tether-host run` configures the node; the log shows the node's Wi-Fi address.
+4. The OpenAI SDK streams a chat completion from a Wi-Fi client to the API, token by token.
+5. A forward: a program on the PC reaches an endpoint on the Wi-Fi network through `127.0.0.1:<listen>`, by IP and by name.
+6. 16 parallel requests (inbound and forwards mixed); the 17th gets 503.
+7. 100 MB transfer: sustained ≥ 0.8 MB/s.
+8. Unplug/replug during a stream: recovery without restarting the host.
+9. Host killed: the node answers 503 within 10 s.
+10. Wi-Fi AP powered off, then on: the node reconnects; a wrong password shows "authentication failed (wrong password?)" in the host log.
+11. Unknown SSID with `[hotspot]` set: the hotspot appears after `fallback`; a client reaches the API through it.
+
+*USB drive*
+12. Explorer shows the drive with a FAT file system of a little under 1 MB, already formatted on first boot.
+13. Files of different sizes, long file names included, can be written, read back unchanged (compare checksums) and deleted;
+    filling the drive gives Windows' normal "not enough space" message.
+14. Files survive ejecting and replugging, a board reset and a power cycle.
+15. `tether-host status` shows the drive as used by the PC; after unplugging from the PC (board powered from elsewhere) the
+    console reports that the node owns it, and after replugging that the PC owns it again.
+16. Copying a large file to the drive during a streaming request: the stream continues (slower), no link reset or framing error.
+17. Unplugging without ejecting during a write: the drive still mounts afterwards (Windows may offer to scan and repair it).
+
+*Endurance*
+18. 24 h soak with periodic requests: no heap growth in STATUS.
+
+CI (`.github/workflows/ci.yml`): Python and C tests on Linux; a second job builds the firmware with PlatformIO and uploads the
 image as an artifact.
 
 ## 12. Build, flash and operate
