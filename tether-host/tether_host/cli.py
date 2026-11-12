@@ -1,24 +1,25 @@
 """Command line: run | status | ports | check-config | bootloader."""
 import argparse
-import asyncio
 import json
 import logging
 import os
-import signal
 import stat
 import sys
 import time
 
-from . import protocol as P
+from . import __version__
 from .config import ConfigError, find_config, load_config, state_dir
-from .link import LinkClosed, SerialTransport, find_ports
-from .session import Session, SessionError, VERSION
+
+# asyncio, pyserial and the session code are imported only by the commands that need them, so the first message
+# appears without waiting for those imports (slow on a first start on Windows, when Python compiles and scans them).
+from .errors import SessionError
 
 log = logging.getLogger("tether")
 
 
 def _load(args):
     path = find_config(args.config)
+    log.info("configuration: %s", path)
     cfg = load_config(path)
     if os.name == "posix" and os.stat(path).st_mode & (stat.S_IRGRP | stat.S_IROTH):
         logging.getLogger("tether").warning("%s is readable by other users and contains passwords (chmod 600)", path)
@@ -26,6 +27,7 @@ def _load(args):
 
 
 def _port(cfg, override=None):
+    from .link import find_ports
     sel = override or cfg.host.port
     ports = find_ports(sel, cfg.host.serial)
     if not ports:
@@ -37,6 +39,7 @@ def _port(cfg, override=None):
 
 def cmd_ports(args):
     from serial.tools import list_ports
+    from .link import find_ports
     found = find_ports("auto")
     for p in list_ports.comports():
         mark = "*" if p.device in found else " "
@@ -55,12 +58,20 @@ def cmd_check(args):
 
 def cmd_run(args):
     path, cfg = _load(args)
+    log.info("configuration OK: %d listener(s), %d forward(s), hotspot %s", len(cfg.listeners), len(cfg.forwards),
+             "on" if cfg.hotspot else "off")
+    import asyncio
+    import signal
+    from .link import SerialTransport
+    from .session import Session
     sdir = state_dir()
     status_path = os.path.join(sdir, "status.json")
 
     async def main():
         async def opener():
-            return SerialTransport(_port(cfg, args.port))
+            port = _port(cfg, args.port)
+            log.info("opening %s", port)
+            return SerialTransport(port)
         session = Session(cfg, opener, status_path)
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
@@ -69,7 +80,6 @@ def cmd_run(args):
                     loop.add_signal_handler(sig, session.stop)
                 except NotImplementedError:   # Windows: Ctrl+C raises KeyboardInterrupt instead
                     pass
-        log.info("%s, config %s", VERSION, path)
         await session.run_forever()
 
     try:
@@ -106,6 +116,10 @@ def cmd_status(args):
 
 def cmd_bootloader(args):
     _, cfg = _load(args)
+    import asyncio
+    from . import protocol as P
+    from .link import SerialTransport
+    from .session import VERSION
 
     async def main():
         t = SerialTransport(_port(cfg, args.port))
@@ -141,6 +155,8 @@ def main(argv=None):
             level = "info"
     logging.basicConfig(level=getattr(logging, (level or "info").upper()), stream=sys.stderr,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    if args.cmd in ("run", "bootloader"):
+        log.info("tether-host %s starting (Ctrl+C stops it)" if args.cmd == "run" else "tether-host %s", __version__)
     try:
         return args.fn(args)
     except (ConfigError, SessionError, OSError) as e:

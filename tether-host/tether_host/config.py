@@ -2,7 +2,6 @@
 import ipaddress
 import json
 import os
-import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -187,18 +186,26 @@ def _hostport(problems, where, v, default_host=None):
     return host, n
 
 
-PLACEHOLDER = re.compile(r"<[^<>]+>")
+# The exact placeholder texts of tether.example.toml (a test keeps this list and the template in sync). Only these count:
+# real values such as a password may contain < and > themselves.
+TEMPLATE_PLACEHOLDERS = (
+    "<Wi-Fi name>",
+    "<Wi-Fi password>",
+    "<hotspot password, 8..63 characters>",
+    "<API host or address on the PC's network>",
+    "<device address or name on the Wi-Fi network>",
+)
 
 
 def _placeholders(problems, value, where=""):
-    """Report every <...> value left over from the template."""
+    """Report every value still holding one of the template's placeholders."""
     if isinstance(value, dict):
         for k, v in value.items():
             _placeholders(problems, v, f"{where}.{k}" if where else k)
     elif isinstance(value, list):
         for i, v in enumerate(value):
             _placeholders(problems, v, f"{where}[{i}]")
-    elif isinstance(value, str) and PLACEHOLDER.search(value):
+    elif isinstance(value, str) and any(ph in value for ph in TEMPLATE_PLACEHOLDERS):
         problems.append(f"{where} still holds the template placeholder {value!r}: replace it with your value")
 
 

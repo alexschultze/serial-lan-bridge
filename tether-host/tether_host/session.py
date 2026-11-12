@@ -10,6 +10,7 @@ import time
 from . import __version__
 from . import protocol as P
 from .bridge import Channel
+from .errors import SessionError  # noqa: F401  (re-exported for callers of the session)
 from .forward import Forwarder
 from .link import LinkClosed
 
@@ -25,8 +26,7 @@ BACKOFF = (0.5, 1, 2, 5)
 VERSION = f"tether-host {__version__}"
 
 
-class SessionError(Exception):
-    pass
+NODE_ANSWER_HINT = 3.0    # seconds without a HELLO from the node before saying so
 
 
 class Session:
@@ -98,15 +98,25 @@ class Session:
 
     async def _run_forever(self):
         step = 0
+        announced = False
+        last_error = None
         while not self._stop:
+            if not announced:
+                log.info("looking for the node (USB %04X:%04X)", *self._usb_id())
+                announced = True
             try:
                 transport = await self._open()
             except (OSError, SessionError) as e:
-                log.warning("cannot open the node: %s", e)
+                if str(e) != last_error:   # say it once; while nothing changes, keep retrying quietly
+                    log.warning("cannot open the node: %s (retrying every %d s)", e, BACKOFF[-1])
+                    last_error = str(e)
+                else:
+                    log.debug("still cannot open the node: %s", e)
                 await self._sleep(BACKOFF[min(step, len(BACKOFF) - 1)])
                 step += 1
                 continue
             step = 0
+            last_error = None
             log.info("link open")
             try:
                 await self._run_link(transport)
@@ -116,6 +126,7 @@ class Session:
                 await self._teardown(transport)
             if not self._stop:
                 self.stats["reconnects"] += 1
+                announced = False
                 log.warning("link lost, reconnecting")
                 await self._sleep(BACKOFF[0])
 
@@ -141,6 +152,9 @@ class Session:
         tasks = [asyncio.ensure_future(self._rx_loop()), asyncio.ensure_future(self._tick_loop())]
         self.send(P.hello(P.Role.HOST, P.NodeState.NEEDS_CONFIG, self.session_id, VERSION))
         log.debug("sent HELLO (host session %08x)", self.session_id)
+        log.info("waiting for the node to answer")
+        hint = asyncio.ensure_future(self._answer_hint())
+        tasks.append(hint)
         why = await self._fail
         log.info("session ended: %s", why)
         for t in tasks:
@@ -261,7 +275,20 @@ class Session:
             log.warning("firmware %s and tether-host %s come from different releases; flash and install the same version",
                         ver, __version__)
 
+    @staticmethod
+    def _usb_id():
+        from .link import TETHER_PID, TETHER_VID
+        return TETHER_VID, TETHER_PID
+
+    async def _answer_hint(self):
+        await asyncio.sleep(NODE_ANSWER_HINT)
+        if self._node_session is None:
+            log.warning("no answer from the node after %.0f s: is the tether firmware running? The board's COM port shows "
+                        "its boot log; a board in download mode or boot loop does not answer", NODE_ANSWER_HINT)
+
     def _push_config(self):
+        if self._cfg_tries == 0:
+            log.info("sending the configuration to the node")
         self._last_config = time.monotonic()
         self._cfg_tries += 1
         self._config_ok = False

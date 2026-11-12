@@ -5,7 +5,7 @@ import tomllib
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from tether_host.config import ConfigError, load_config, parse_config  # noqa: E402
+from tether_host.config import TEMPLATE_PLACEHOLDERS, ConfigError, load_config, parse_config  # noqa: E402
 
 TEMPLATE = os.path.join(os.path.dirname(__file__), "..", "..", "tether.example.toml")
 
@@ -35,6 +35,17 @@ class Template(unittest.TestCase):
         self.assertEqual(cfg.forwards, [])
         self.assertEqual(cfg.listeners[0].target_host, "10.0.0.5")
         self.assertEqual(cfg.host.port, "auto")
+
+    def test_placeholder_list_matches_the_template(self):
+        with open(TEMPLATE, encoding="utf-8") as fh:
+            values = re.findall(r'"([^"]*)"', fh.read())          # quoted values only, not the explanations in comments
+        found = {ph for v in values for ph in re.findall(r"<[^<>]+>", v)}
+        self.assertEqual(found, set(TEMPLATE_PLACEHOLDERS))
+
+    def test_values_with_angle_brackets_are_accepted(self):
+        cfg = parse_config({"wifi": {"network": [{"ssid": "<home>", "psk": "<my>secret>pw"}]},
+                            "listener": [{"id": 1, "port": 8000, "target": "10.0.0.5:8000"}]})
+        self.assertEqual((cfg.networks[0].ssid, cfg.networks[0].psk), ("<home>", "<my>secret>pw"))
 
     def test_template_holds_no_real_looking_secrets(self):
         with open(TEMPLATE, encoding="utf-8") as fh:

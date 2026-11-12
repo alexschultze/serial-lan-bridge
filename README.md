@@ -103,12 +103,13 @@ Other commands: `tether-host ports` (lists serial ports and marks tether nodes),
 
 ## First use: what to look for
 
-`tether-host run` logs every step on the console; add `--log-level debug` to see the handshake, the configuration exchange and
+`tether-host run` logs every step on the console, from its first second on (start, configuration, looking for the node, waiting for its answer, configuring it); add `--log-level debug` to see the handshake, the configuration exchange and
 each channel. Messages from the ESP32 appear under `tether.node`, so you rarely need its serial console.
 
 | Console shows | Meaning and fix |
 |---|---|
 | `cannot open the node: no tether-node found` | No matching USB device. Check `tether-host ports`; use the board's native USB port (not a CP210x/CH340 UART port). |
+| `no answer from the node after 3 s: is the tether firmware running?` | The port opened, but the firmware does not answer: check the boot log on the board's `COM` port (boot loop, download mode, other firmware). |
 | `port COMx (303A:1001 ...) is an ESP32 in ROM/download mode` | The board runs the ROM bootloader or has no firmware: flash tether-node, then reset it. |
 | `serial read failed: ...` / `link lost, reconnecting` | The board was unplugged or reset; the host reconnects on its own. |
 | `node Wi-Fi: '<ssid>': authentication failed (wrong password?)` | Check `psk` of that network in the TOML file, then restart `tether-host`. |
