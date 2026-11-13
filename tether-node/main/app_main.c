@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "led.h"
 #include "platform_esp.h"
 #include "tc_engine.h"
 #include "usb_link.h"
@@ -37,5 +38,6 @@ void app_main(void)
         esp_restart();
     }
     wifi_mgr_init();
+    led_init();
     xTaskCreate(net_task, "net", 8192, NULL, 5, NULL);
 }

@@ -16,7 +16,7 @@ tests/test_core.c         C unit tests; shared byte vectors in ../testvectors/fr
 ```
 make -C sim test          # C unit tests under ASan/UBSan
 make -C sim               # builds sim/build/tether_sim
-python -m unittest discover -s ../tether-host/tests     # includes end-to-end tests against tether_sim
+python -m unittest discover -s ../tether_host/tests     # includes end-to-end tests against tether_sim
 ```
 
 ## Build and flash the ESP32-S3

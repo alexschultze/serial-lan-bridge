@@ -3,7 +3,7 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tether-host"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tether_host"))
 from tether_host import protocol as P  # noqa: E402
 
 cases = [

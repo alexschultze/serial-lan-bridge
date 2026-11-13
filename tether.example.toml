@@ -35,6 +35,16 @@ port     = 8000             # port the node opens on the Wi-Fi network
 target   = "<API host or address on the PC's network>:8000"
 protocol = "http"           # "http": clients get 502/503/504 answers on failure; "tcp": the connection is just closed
 # allow  = ["192.168.1.0/24"]   # who may connect; without this line: only the node's own subnet
+# host_header = "auto"          # http only: replace the Host header of every request with the target's name (and :port unless 80 or 443),
+#                               # or give a name. For API servers that check Host; the Wi-Fi client keeps using the node's address.
+# tls = "connect"               # the PC speaks HTTPS to the target (target port is usually 443); the Wi-Fi client stays plain HTTP
+# tls_verify = true             # check the target's certificate; false only for a target with a self-signed one
+
+# Universal inbound: the Wi-Fi client picks the destination in the URL, http://<node>:9100/https/example.com/path (or /http/<host>:<port>/).
+# [[listener]]
+# id        = 3
+# port      = 9100
+# universal = true            # no target / host_header / tls here: the URL decides; the PC connects to the destination
 
 # Outbound (optional): a port on the PC carried to an endpoint on the Wi-Fi network. Remove the # to use it.
 # [[forward]]               # 0 to 8 forwards
@@ -43,3 +53,17 @@ protocol = "http"           # "http": clients get 502/503/504 answers on failure
 # target          = "<device address or name on the Wi-Fi network>:80"
 # protocol        = "http"             # "http" or "tcp", as above
 # connect_timeout = 5                  # seconds; default host.connect_timeout
+# host_header     = "auto"             # http only: replace the Host header of every request. "auto" = the target's name
+#                                      # (and :port unless 80 or 443), or give a name. Needed for servers that check Host (Cloudflare
+#                                      # sites, FRITZ!Box DNS-rebind protection) when you browse to 127.0.0.1:<port>.
+#                                      # Responses are not changed: redirects still point to the server's own address.
+# tls             = "connect"          # the final leg to the target uses HTTPS (target port usually 443); the local program
+#                                      # stays plain HTTP, so combine with host_header = "auto" for a site by name.
+# tls_verify      = true               # check the target's certificate; false only for a self-signed one (e.g. a FRITZ!Box)
+
+# Universal outbound: http://127.0.0.1:9000/https/example.com/v1/models reaches https://example.com/v1/models through the node.
+# The node connects to ANY host and port named in the URL, so keep it on 127.0.0.1. Needs the matching firmware.
+# [[forward]]
+# id        = 4
+# listen    = "127.0.0.1:9000"
+# universal = true            # no target / host_header / tls here: the URL decides

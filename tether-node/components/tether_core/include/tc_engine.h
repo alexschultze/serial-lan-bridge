@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
     uint16_t id, port;
     char host[64];               /* IPv4 literal or a name resolved on the node's network */
+    bool any;                    /* universal forward: the OPEN message names the endpoint (host and port are unused) */
 } tc_forward_cfg;
 
 typedef struct {

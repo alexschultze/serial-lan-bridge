@@ -264,8 +264,15 @@ class ConfigAssembler:
         return blob
 
 
-def open_req(chan: int, forward_id: int) -> Frame:
-    return Frame(T.OPEN, chan, struct.pack("<H", forward_id))
+def open_req(chan: int, forward_id: int, host: str | None = None, port: int | None = None) -> Frame:
+    """OPEN for a forward. A universal forward also names the endpoint: port u16 and the host name (1..63 ASCII bytes)."""
+    payload = struct.pack("<H", forward_id)
+    if host is not None:
+        h = host.encode("ascii")
+        if not 1 <= len(h) <= 63 or not 1 <= port <= 65535:
+            raise FrameError("bad OPEN endpoint")
+        payload += struct.pack("<H", port) + h
+    return Frame(T.OPEN, chan, payload)
 
 
 def parse_open(p: bytes) -> int:

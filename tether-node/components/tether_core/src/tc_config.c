@@ -190,14 +190,18 @@ int tc_config_parse(const char *js, size_t len, tc_config *o, char *errbuf, size
         int it = tj_item(t, fw, i);
         tc_forward_cfg *f = &o->fwd[i];
         long id, port;
+        int an = tj_get(js, t, it, "any"), av = 0;
+        if (an >= 0) tj_bool(js, &t[an], &av);
+        f->any = av != 0;   /* universal forward: the endpoint comes with each OPEN, so no host and port here */
         get_int(js, t, it, "id", 0, 1, 65535, &er, "forward id", &id);
         get_int(js, t, it, "port", 0, 1, 65535, &er, "forward port", &port);
-        if (id == 0 || port == 0) bad(&er, "forward %d: id and port required", i);
+        if (id == 0 || (port == 0 && !f->any)) bad(&er, "forward %d: id and port required", i);
         f->id = (uint16_t)id;
         f->port = (uint16_t)port;
         int h = tj_get(js, t, it, "host");
         int hl = h >= 0 ? tj_str(js, &t[h], f->host, sizeof f->host) : -1;
-        if (hl < 1) bad(&er, "forward %d: host must be 1..63 characters", i);
+        if (hl < 1 && !f->any) bad(&er, "forward %d: host must be 1..63 characters", i);
+        if (hl < 1) f->host[0] = 0;
         for (int j = 0; j < i; j++) {
             if (o->fwd[j].id == f->id) bad(&er, "forward id %d used twice", f->id);
         }

@@ -24,7 +24,8 @@ def free_port():
 def make_cfg(listen_port, target_port, protocol="http", window=4096, forwards=()):
     """forwards: (local listen port, target host, target port[, protocol]) tuples."""
     return parse_config({
-        "forward": [{"id": i + 1, "listen": fw[0], "target": f"{fw[1]}:{fw[2]}", "protocol": fw[3] if len(fw) > 3 else "http"}
+        "forward": [{"id": i + 1, "listen": fw[0], "target": f"{fw[1]}:{fw[2]}", "protocol": fw[3] if len(fw) > 3 else "http",
+                     "host_header": fw[4] if len(fw) > 4 else ""}
                     for i, fw in enumerate(forwards)],
         "link": {"window": window},
         "wifi": {"network": [{"ssid": "x", "psk": "password1"}]},

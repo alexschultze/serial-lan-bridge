@@ -54,7 +54,7 @@ PY
 # ---- tether-host source zip ----------------------------------------------------------------------------------------
 STAGE="$BUILD/tether-host-$VERSION"
 mkdir -p "$STAGE"
-cp -r "$ROOT/tether-host/tether_host" "$ROOT/tether-host/pyproject.toml" "$ROOT/tether-host/README.md" "$STAGE/"
+cp -r "$ROOT/tether_host/tether_host" "$ROOT/tether_host/pyproject.toml" "$ROOT/tether_host/README.md" "$STAGE/"
 cp "$ROOT/tether.example.toml" "$STAGE/"
 find "$STAGE" -name __pycache__ -prune -exec rm -rf {} +
 python3 - "$STAGE/tether_host/__init__.py" "$VERSION" <<'PY'

@@ -101,7 +101,7 @@ static void try_connect(void)
         return;
     }
     uint16_t n = 20;
-    wifi_ap_record_t recs[20];
+    static wifi_ap_record_t recs[20];   /* static: 20 records are ~2.5 KB, too much for the wifi_mgr task's stack (only mgr_task calls this) */
     esp_wifi_scan_get_ap_records(&n, recs);
     for (int k = 0; k < n; k++) {
         ESP_LOGD(TAG, "scan: '%s' ch %d rssi %d auth %d", (char *)recs[k].ssid, recs[k].primary, recs[k].rssi, recs[k].authmode);
@@ -247,7 +247,7 @@ void wifi_mgr_init(void)
     mdns_init();
     mdns_hostname_set(hostname);
     mdns_instance_name_set("tether-node");
-    xTaskCreate(mgr_task, "wifi_mgr", 4096, NULL, 4, NULL);
+    xTaskCreate(mgr_task, "wifi_mgr", 6144, NULL, 4, NULL);
 }
 
 int wifi_mgr_apply(const tc_wifi_cfg *c, char *err, size_t errcap)
@@ -298,6 +298,11 @@ void wifi_mgr_status(tc_status *st)
         snprintf(st->ip, sizeof st->ip, IPSTR, IP2STR(&ip.ip));
         ap_ssid(st->ssid, sizeof st->ssid);
     }
+}
+
+int wifi_mgr_led_state(void)
+{
+    return (sta_up ? 1 : 0) | (ap_on ? 2 : 0);
 }
 
 int wifi_mgr_subnet(uint32_t local, uint32_t *net, uint32_t *mask)

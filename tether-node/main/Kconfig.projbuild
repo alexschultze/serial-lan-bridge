@@ -1,0 +1,22 @@
+menu "tether-node status LED"
+
+    config TETHER_LED_ENABLE
+        bool "Show the node's state on the on-board RGB LED (WS2812)"
+        default y
+
+    config TETHER_LED_GPIO
+        int "GPIO of the RGB LED data line"
+        depends on TETHER_LED_ENABLE
+        default 48
+        help
+            48 on most ESP32-S3-DevKitC-1 boards and dual USB-C clones, 38 on DevKitC-1 v1.1.
+
+    config TETHER_LED_BRIGHTNESS
+        int "LED brightness (1 to 255)"
+        depends on TETHER_LED_ENABLE
+        range 1 255
+        default 16
+        help
+            The WS2812 on these boards is very bright; 16 is comfortable indoors.
+
+endmenu

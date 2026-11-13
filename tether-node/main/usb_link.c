@@ -14,10 +14,13 @@
 #include "esp_timer.h"
 #include "esp_vfs_eventfd.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/stream_buffer.h"
 #include "tinyusb.h"
 #include "tinyusb_cdc_acm.h"
 #include "tinyusb_default_config.h"
+#include "device/usbd_pvt.h"   /* usbd_defer_func: run a function in TinyUSB's own task */
 #include "storage.h"
+#include "led.h"
 
 static const char *TAG = "usb";
 static int evfd = -1;
@@ -31,9 +34,47 @@ static void signal_rx(void)
     write(evfd, &one, sizeof one);
 }
 
+/* Receiving: ALL reads of TinyUSB's receive FIFO happen in TinyUSB's own task (the rx callback and pump_deferred below),
+ * into our own buffer; the net task only reads that buffer. Reading from the net task re-armed the USB receive endpoint
+ * from the wrong task: TinyUSB marks the endpoint free before its task has copied the received packets out of the
+ * endpoint buffer, so a re-arm from another task in that gap overwrote them (one damaged 64-byte packet per hit, which
+ * showed up as frames with a wrong CRC under load). */
+#define RX_RING_BYTES 32768
+static StaticStreamBuffer_t rx_ring_ctl;
+static uint8_t rx_ring_store[RX_RING_BYTES + 1];
+static StreamBufferHandle_t rx_ring;
+static volatile bool pump_queued;
+
+static void pump(void)   /* TinyUSB task only */
+{
+    uint8_t tmp[256];
+    size_t added = 0;
+    for (;;) {
+        size_t space = xStreamBufferSpacesAvailable(rx_ring);
+        if (space == 0 || tud_cdc_n_available(0) == 0) {
+            break;   /* full: the rest stays in TinyUSB's FIFO, which makes USB hold the host back until we are called again */
+        }
+        uint32_t n = tud_cdc_n_read(0, tmp, space < sizeof tmp ? space : sizeof tmp);
+        if (n == 0) {
+            break;
+        }
+        xStreamBufferSend(rx_ring, tmp, n, 0);
+        added += n;
+    }
+    if (added) {
+        signal_rx();
+    }
+}
+
+static void pump_deferred(void *param)
+{
+    pump_queued = false;
+    pump();
+}
+
 static void rx_cb(int itf, cdcacm_event_t *event)
 {
-    signal_rx();
+    pump();   /* runs in TinyUSB's task */
 }
 
 static void line_state_cb(int itf, cdcacm_event_t *event)
@@ -51,6 +92,7 @@ int usb_link_init(void)
         ESP_LOGE(TAG, "eventfd registration failed: %s", esp_err_to_name(r));
         return -1;
     }
+    rx_ring = xStreamBufferCreateStatic(RX_RING_BYTES, 1, rx_ring_store, &rx_ring_ctl);
     evfd = eventfd(0, 0);   /* never blocks on read in ESP-IDF: an empty eventfd reads as 0 */
     if (evfd < 0) {
         ESP_LOGE(TAG, "eventfd() failed");
@@ -99,12 +141,16 @@ int usb_link_read(uint8_t *buf, size_t cap)
 {
     uint64_t v;
     read(evfd, &v, sizeof v);   /* clear the wake-up first: data that arrives after this re-signals it */
-    size_t n = 0;
-    if (tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, buf, cap, &n) != ESP_OK) {
-        return 0;
+    size_t n = xStreamBufferReceive(rx_ring, buf, cap, 0);
+    if (n > 64) {
+        led_activity();   /* bigger than a control message (hello/ping/status): payload data */
     }
-    if (n > 0 && tud_cdc_n_available(0) > 0) {
+    if (n > 0 && xStreamBufferBytesAvailable(rx_ring) > 0) {
         signal_rx();   /* more is waiting; make sure the next select() wakes up */
+    }
+    if (tud_cdc_n_available(0) > 0 && !pump_queued) {   /* the FIFO held data back while our buffer was full: ask TinyUSB's task */
+        pump_queued = true;
+        usbd_defer_func(pump_deferred, NULL, false);
     }
     return (int)n;
 }
@@ -114,6 +160,9 @@ int usb_link_write(const uint8_t *buf, size_t n, int may_drop)
     if (!tud_cdc_n_connected(0)) {
         ESP_LOGD(TAG, "no host on the port (DTR low): %s %u bytes", may_drop ? "dropping" : "cannot send", (unsigned)n);
         return may_drop ? 0 : -1;
+    }
+    if (n > 64) {
+        led_activity();
     }
     size_t off = 0;
     int64_t t0 = esp_timer_get_time();

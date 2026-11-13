@@ -9,3 +9,4 @@ dependencies.lock
 *.egg-info/
 dist/
 sdkconfig.esp32s3
+tether.toml
