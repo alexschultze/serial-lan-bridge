@@ -246,9 +246,14 @@ class UniversalE2E(unittest.IsolatedAsyncioTestCase):
         srv, tp = await echo_server(recording_server(heads))
         lp = free_port()
         cfg = cfg_of(listener=[{"id": 1, "port": lp, "universal": True}])
-        async with Rig(cfg):
+        async with Rig(cfg) as rig:
             head = await http_get(lp, b"GET /http/127.0.0.1:%d/a/b HTTP/1.1\r\nHost: tether-xxxx:%d\r\n\r\n" % (tp, lp))
             self.assertTrue(head.startswith(b"HTTP/1.1 200"))
+            # the next connection would get the same channel id: wait until both sides have let go of the first one
+            for _ in range(200):
+                if not rig.session.channels and not rig.node.channels:
+                    break
+                await asyncio.sleep(0.05)
             head = await http_get(lp, b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n")
             self.assertTrue(head.startswith(b"HTTP/1.1 400"))
         srv.close()
