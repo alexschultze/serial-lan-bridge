@@ -15,7 +15,7 @@ jobs:
       - name: C unit tests (ASan/UBSan)
         run: make -C tether-node/sim test
       - name: Python unit and end-to-end tests (including the C engine over a pty)
-        run: python -m unittest discover -s tether-host/tests -v
+        run: python -m unittest discover -s tether_host/tests -v
 
   firmware:
     runs-on: ubuntu-latest

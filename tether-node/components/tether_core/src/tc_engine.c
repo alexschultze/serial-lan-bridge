@@ -616,7 +616,9 @@ static void resolver_results(tc_engine *e)
 static void on_open(tc_engine *e, const tc_frame *f)
 {
     uint16_t id = f->chan;
-    if (f->plen != 2 || id <= TC_HOST_CHAN_BASE || id > TC_HOST_CHAN_BASE + TC_MAX_CHANNELS) {
+    /* payload: forward id u16, and for a universal forward also port u16 and the host name (1..63 bytes) */
+    if (f->plen < 2 || f->plen > 2 + 2 + 63 || f->plen == 3 || f->plen == 4 ||
+        id <= TC_HOST_CHAN_BASE || id > TC_HOST_CHAN_BASE + TC_MAX_CHANNELS) {
         send_open_res(e, id, TC_OPEN_BAD_REQUEST);
         return;
     }
@@ -632,6 +634,29 @@ static void on_open(tc_engine *e, const tc_frame *f)
     if (!fw) {
         send_open_res(e, id, TC_OPEN_UNKNOWN_FORWARD);
         return;
+    }
+    tc_forward_cfg named;   /* the endpoint of a universal forward, as named by this OPEN */
+    if (f->plen > 2 || fw->any) {
+        if (!fw->any || f->plen < 5) {   /* only a universal forward takes an endpoint from the message, and it must name one */
+            send_open_res(e, id, TC_OPEN_BAD_REQUEST);
+            return;
+        }
+        memset(&named, 0, sizeof named);
+        named.id = fid;
+        named.port = tc_get16(f->payload + 2);
+        size_t hl = f->plen - 4;
+        for (size_t k = 0; k < hl; k++) {
+            if (f->payload[4 + k] <= 0x20 || f->payload[4 + k] >= 0x7f) {
+                send_open_res(e, id, TC_OPEN_BAD_REQUEST);
+                return;
+            }
+        }
+        memcpy(named.host, f->payload + 4, hl);
+        if (named.port == 0) {
+            send_open_res(e, id, TC_OPEN_BAD_REQUEST);
+            return;
+        }
+        fw = &named;
     }
     if (find_chan(e, id)) {
         send_open_res(e, id, TC_OPEN_BAD_REQUEST);
@@ -895,6 +920,10 @@ static int link_input(tc_engine *e)
         if (e->df.errors != e->errs_seen) {
             e->cnt.crc_errors += e->df.errors - e->errs_seen;
             e->errs_seen = e->df.errors;
+            elog(e, 1, "bad frame: kind %u, %u raw bytes, decoded %d, crc %08x want %08x, head %02x %02x %02x %02x %02x %02x %02x %02x",
+                 e->df.last_err, e->df.last_len, e->df.last_n, (unsigned)e->df.last_crc_got, (unsigned)e->df.last_crc_want,
+                 e->df.last_head[0], e->df.last_head[1], e->df.last_head[2], e->df.last_head[3], e->df.last_head[4],
+                 e->df.last_head[5], e->df.last_head[6], e->df.last_head[7]);
             if (e->state == TC_STATE_RUNNING) {
                 to_needs_config(e, "framing error");
             }

@@ -39,6 +39,12 @@ typedef struct {
     size_t len;
     int overflow;
     uint32_t errors;
+    /* diagnostics of the last bad frame: kind 1 no delimiter within the maximum length, 2 impossible length, 3 CRC mismatch */
+    uint8_t last_err;
+    uint16_t last_len;           /* raw (COBS) length */
+    int16_t last_n;              /* decoded length */
+    uint32_t last_crc_got, last_crc_want;
+    uint8_t last_head[12];       /* first raw bytes */
 } tc_deframer;
 
 uint32_t tc_crc32(uint32_t crc, const uint8_t *buf, size_t len);   /* zlib.crc32 compatible */

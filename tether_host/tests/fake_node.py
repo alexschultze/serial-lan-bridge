@@ -225,12 +225,22 @@ class FakeNode:
 
     def _on_open(self, f):
         cid = f.chan
-        fid = P.parse_open(f.payload)
+        # like the real node: a universal forward ("any") takes its endpoint from the message (port u16 + host name),
+        # every other forward refuses an endpoint in the message
+        fid = int.from_bytes(f.payload[:2], "little") if len(f.payload) >= 2 else -1
         fwd = self.forwards.get(fid)
+        bad_endpoint = False
+        if fwd is not None and (len(f.payload) > 2 or fwd.get("any")):
+            if not fwd.get("any") or len(f.payload) < 5:
+                bad_endpoint = True
+            else:
+                fwd = {"host": f.payload[4:].decode("ascii"), "port": int.from_bytes(f.payload[2:4], "little")}
         if self.state != P.NodeState.RUNNING:
             status = P.Open.NOT_READY
         elif fwd is None:
             status = P.Open.UNKNOWN_FORWARD
+        elif bad_endpoint:
+            status = P.Open.BAD_REQUEST
         elif cid in self.channels or cid in self.pending:
             status = P.Open.BAD_REQUEST
         elif len(self.channels) + len(self.pending) >= P.MAX_CHANNELS:

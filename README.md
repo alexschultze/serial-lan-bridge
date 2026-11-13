@@ -24,7 +24,7 @@ Connect a **Wi-Fi network** and a **Windows PC's network** through an **ESP32-S3
 | Component | Dir | Role |
 |---|---|---|
 | **tether-node** | `tether-node/` | ESP32-S3 firmware (ESP-IDF, C): joins Wi-Fi by DHCP (or starts a hotspot), listens on ports, forwards connections over USB |
-| **tether-host** | `tether-host/` | Python 3.11+ on the bridge PC: pushes the configuration, connects to the API, listens on the forwarded local ports, multiplexes connections over the serial port |
+| **tether-host** | `tether_host/` | Python 3.11+ on the bridge PC: pushes the configuration, connects to the API, listens on the forwarded local ports, multiplexes connections over the serial port |
 
 Full design, wire protocol, state machines and decisions: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -88,7 +88,7 @@ locally into `dist/` (needs PlatformIO and esptool).
    listeners (`port` opened on the node, `target` = the API as seen from the PC).
 3. **Run on the PC**:
    ```
-   pip install ./tether-host
+   pip install ./tether_host
    tether-host check-config --config tether.toml
    tether-host run --config tether.toml
    ```
@@ -144,6 +144,15 @@ listen = "127.0.0.1:9000"      # on the PC (a bare port number means 127.0.0.1)
 target = "192.168.1.20:80"     # IPv4 address or a name the node resolves on the Wi-Fi network
 ```
 
+A forward or a listener can rewrite the `Host` header (`host_header = "auto"`, http only) for servers that reject requests
+addressed to `127.0.0.1` or to the node, such as a FRITZ!Box (DNS-rebind protection) or sites behind Cloudflare. Responses are
+not rewritten. With `tls = "connect"` the final leg to the target uses HTTPS while the local program or Wi-Fi client stays on plain
+HTTP (`tls_verify = false` for a target with a self-signed certificate).
+
+`universal = true` on a forward or listener makes one port serve any destination: the URL carries it, for example
+`http://127.0.0.1:9000/https/opencode.ai/v1/models` (`/<http|https>/<host>[:port]/<path>`). It needs matching firmware, and for a
+forward the node connects to **any** host and port the PC names, so keep it on `127.0.0.1`.
+
 All options with comments: [tether.example.toml](tether.example.toml); rules and semantics: ARCHITECTURE.md section 6.
 
 ## Behaviour and limits
@@ -163,7 +172,7 @@ All options with comments: [tether.example.toml](tether.example.toml); rules and
 
 ```
 make -C tether-node/sim test                       # C unit tests (ASan/UBSan)
-python -m unittest discover -s tether-host/tests   # protocol, host with a Python node, host with the C engine (needs make and a C compiler)
+python -m unittest discover -s tether_host/tests   # protocol, host with a Python node, host with the C engine (needs make and a C compiler)
 ```
 
 `testvectors/frames.json` holds byte-exact frames that both the Python and the C implementation reproduce;

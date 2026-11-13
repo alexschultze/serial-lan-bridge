@@ -97,10 +97,22 @@ int tc_deframer_push(tc_deframer *d, uint8_t b, tc_frame *f)
     int ok = 0;
     if (d->overflow) {
         d->errors++;
+        d->last_err = 1;
+        d->last_len = (uint16_t)d->len;
+        d->last_n = -1;
+        memcpy(d->last_head, d->buf, d->len < sizeof d->last_head ? d->len : sizeof d->last_head);
     } else if (d->len) {
         int n = tc_cobs_decode(d->buf, d->len, d->body);
         if (n < 8 || n > TC_MAX_BODY || tc_crc32(0, d->body, (size_t)n - 4) != tc_get32(d->body + n - 4)) {
             d->errors++;
+            d->last_err = (n < 8 || n > TC_MAX_BODY) ? 2 : 3;
+            d->last_len = (uint16_t)d->len;
+            d->last_n = (int16_t)n;
+            if (d->last_err == 3) {
+                d->last_crc_got = tc_get32(d->body + n - 4);
+                d->last_crc_want = tc_crc32(0, d->body, (size_t)n - 4);
+            }
+            memcpy(d->last_head, d->buf, d->len < sizeof d->last_head ? d->len : sizeof d->last_head);
         } else {
             f->type = d->body[0];
             f->flags = d->body[1];

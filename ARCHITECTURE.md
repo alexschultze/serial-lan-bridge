@@ -100,7 +100,7 @@ serial-lan-bridge/
 ├── tether.example.toml          annotated example configuration
 ├── tools/                       make_release.sh (release files), release_notes.md (template of the release text)
 ├── testvectors/                 frames.json (shared by Python and C tests), make_vectors.py
-├── tether-host/                 Python 3.11+, depends on pyserial only
+├── tether_host/                 Python 3.11+, depends on pyserial only
 │   ├── pyproject.toml           entry point `tether-host`, `python -m tether_host`
 │   ├── tether_host/
 │   │   ├── protocol.py          framing and payload helpers (reference implementation)
@@ -164,7 +164,7 @@ are tested against `testvectors/frames.json`.
 | 0x13 | LOG | node→host | 0 | level u8 (0 error, 1 warn, 2 info, 3 debug) · UTF-8 text |
 | 0x14 | REBOOT | host→node | 0 | mode u8: 0 normal restart, 1 restart into ROM download mode **(verify)** |
 | 0x20 | ACCEPT | node→host | n | listener u16 · peer ip4 (4 B) · peer port u16 |
-| 0x21 | OPEN | host→node | 0x8000+n | forward id u16 (the endpoint comes from the node's configuration, not from the message) |
+| 0x21 | OPEN | host→node | 0x8000+n | forward id u16 (the endpoint comes from the node's configuration, not from the message). Only for a forward configured `"any": true` (universal) it is followed by port u16 and the host name (1..63 printable ASCII bytes): the endpoint of this connection. Any other combination is answered with BAD_REQUEST |
 | 0x22 | OPEN_RES | node→host | 0x8000+n | status u8: 0 OK, 1 REFUSED, 2 UNREACHABLE, 3 DNS, 4 NO_CAPACITY, 5 UNKNOWN_FORWARD, 6 BAD_REQUEST, 7 NOT_READY |
 | 0x30 | DATA | both | n | stream bytes, 1..1024 |
 | 0x31 | CREDIT | both | n | additional bytes the peer may send, u32 |
@@ -405,7 +405,39 @@ listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0
 target          = "192.168.1.20:80"  # on the Wi-Fi network: IPv4 address or a name the node resolves there
 protocol        = "http"             # "http" (503/502/504 replies to the local program) or "tcp"
 connect_timeout = 5                  # seconds the node may take to connect; default host.connect_timeout
+host_header     = "auto"             # optional, http only, PC side (never sent to the node): rewrite the Host header, see below
+tls             = "connect"          # optional, PC side: HTTPS on the final leg to the target, see below
+tls_verify      = true               # check the target's certificate (default true)
 ```
+
+`tls = "connect"` (on a `[[forward]]` or `[[listener]]`): the client side stays plain HTTP and tether-host speaks HTTPS to the target.
+For a listener the PC opens a TLS connection to the target; for a forward the bytes travel through the node, so tether-host runs the
+TLS client itself over in-memory buffers (the node stays plain TCP and never sees a key). The server name for SNI and the
+certificate check is the target's host name, the check uses the system certificate store, and only HTTP/1.1 is offered (the Host
+rewriter does not parse HTTP/2). A TLS or certificate failure is logged and the local client gets `502`. `tls_verify = false` accepts
+any certificate (logged as a warning): use it only for a target you cannot verify, such as a device with a self-signed certificate.
+Together with `host_header = "auto"` this lets a plain `http://127.0.0.1:<port>` reach an HTTPS site by name.
+
+**Universal forwarder** (`universal = true` on a `[[forward]]` or a `[[listener]]`, http only, no `target`, `host_header` or `tls`): the
+destination of each connection is part of the first request's path, `/<http|https>/<host>[:port]/<rest>`. tether-host
+reads that first request head, strips the prefix from every request on the connection (a later request with another prefix
+resets the connection), sets `Host` to the destination (without the port when it is the scheme's default) and uses TLS for
+`https` (certificate checking on; `tls_verify = false` switches it off). A path that names no destination gets `400`. For a
+listener the PC connects to the destination itself. For a forward the destination travels in `OPEN` (4.6b) and the node, whose
+config marks that forward `"any": true`, connects to it: **any host and port the PC names**, including devices on the Wi-Fi
+network, so keep such a forward on `127.0.0.1` and use it only on a PC you trust. A forward without `universal` still
+cannot make the node connect anywhere but its configured endpoint. Responses are not rewritten (redirects can leave the prefix).
+
+`host_header` is also accepted on a `[[listener]]` (http only), where it rewrites the requests of the Wi-Fi clients on their way to the
+target; everything below applies to both.
+
+`host_header`: a forward carries bytes, so the server sees the client's own `Host` (for example `127.0.0.1:9000`), which servers
+that host several sites or guard against DNS rebinding refuse. With `host_header` set, tether-host replaces the `Host` line of every
+HTTP/1.x request on that forward: `"auto"` uses the target's name (plus `:port` unless the port is 80 or 443), any other value is used
+as given. Requests are followed one by one (keep-alive); bodies are skipped by `Content-Length` or chunked framing and never
+touched. The host stops rewriting and passes the rest of the connection through when it cannot follow it: not HTTP, a head over
+64 KB, an `Upgrade` (WebSocket) or `CONNECT`, a malformed length. Responses are never changed, so a redirect still names the
+server's own address, and `Origin`/`Referer` headers are not rewritten. HTTPS cannot be rewritten (the bytes are encrypted).
 
 ### 6.2 Validation (host side, before anything is sent; `tether-host check-config` runs only this)
 
@@ -568,11 +600,11 @@ In-flight streaming responses cannot be resumed after a fault; clients retry.
 
 | Level | What | Where |
 |---|---|---|
-| Unit (Python) | framing, payload helpers, chunked CONFIG | `tether-host/tests/test_protocol.py` |
+| Unit (Python) | framing, payload helpers, chunked CONFIG | `tether_host/tests/test_protocol.py` |
 | Shared vectors | Python and C decode and re-encode identical bytes | `testvectors/frames.json`; `make_vectors.py` only with a protocol version bump |
 | Unit (C) | CRC, COBS, deframer faults, JSON, config validation, vectors; built with ASan/UBSan | `make -C tether-node/sim test` |
-| Host against a Python node | streaming without buffering, 1.5 MB round trip, half-close, 502, 503 at 17 connections, node reset, framing fault, silent node | `tether-host/tests/test_e2e.py` with `fake_node.py` |
-| Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config; forwards by IP and by name (resolver thread), 1.5 MB both ways, refused and unresolvable endpoints, 8 outbound plus 8 inbound sharing the 16 channels | `tether-host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
+| Host against a Python node | streaming without buffering, 1.5 MB round trip, half-close, 502, 503 at 17 connections, node reset, framing fault, silent node | `tether_host/tests/test_e2e.py` with `fake_node.py` |
+| Host against the real C engine | same over a pseudo-terminal and the real `SerialTransport`: streaming, transfers with 4 KiB and 1 KiB windows, half-close, 502/503, allow-list, never-used timeout, node killed and restarted, rejected Wi-Fi config; forwards by IP and by name (resolver thread), 1.5 MB both ways, refused and unresolvable endpoints, 8 outbound plus 8 inbound sharing the 16 channels | `tether_host/tests/test_sim_e2e.py` (needs `make` and a C compiler; Linux/macOS) |
 | Hardware | checklist below | a board plus the bridge PC |
 
 Hardware acceptance checklist (board: ESP32-S3-WROOM-1 N16R8, PC: Windows 11 without added drivers):

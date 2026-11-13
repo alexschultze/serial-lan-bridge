@@ -22,7 +22,7 @@ class Forwarder:
                 await self.stop()
                 raise OSError(f"forward {f.id}: cannot listen on {f.listen_host}:{f.listen_port}: {e}") from e
             self._servers.append(srv)
-            log.info("forward %d: %s:%d -> %s:%d via the node", f.id, f.listen_host, f.listen_port, f.target_host, f.target_port)
+            log.info("forward %d: %s:%d -> %s via the node", f.id, f.listen_host, f.listen_port, f.label)
             if f.exposed:
                 log.warning("forward %d listens on %s, which other machines can reach (use 127.0.0.1 to keep it local)",
                             f.id, f.listen_host)
@@ -49,5 +49,5 @@ class Forwarder:
             return
         peer = writer.get_extra_info("peername")
         peer = f"{peer[0]}:{peer[1]}" if peer else "local"
-        log.info("connection from %s on forward %d -> %s:%d", peer, f.id, f.target_host, f.target_port)
+        log.info("connection from %s on forward %d -> %s", peer, f.id, f.label)
         s.channels[cid] = OutboundChannel(s, cid, f, peer, self.cfg.link.window, reader, writer)
