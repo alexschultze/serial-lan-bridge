@@ -237,6 +237,10 @@ class Channel:
                         self._writer.write(rest)
                     if self._writer.can_write_eof():
                         self._writer.write_eof()
+                    else:
+                        # a TLS stream cannot be half-closed: without this the site keeps its connection (and our channel)
+                        # open until the 60 s linger runs out, and 16 such channels block every new connection
+                        self._writer.close()
                     self._w_state = 2
                     self._maybe_finish()
                     return

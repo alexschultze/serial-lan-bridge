@@ -368,6 +368,30 @@ class TlsTests(unittest.IsolatedAsyncioTestCase):
         srv = await asyncio.start_server(handler, "127.0.0.1", 0, ssl=self.server_ctx)
         return srv, srv.sockets[0].getsockname()[1]
 
+    async def test_listener_with_tls_target_ends_when_the_client_leaves(self):
+        """A site that keeps its connection alive must not keep the channel: a TLS stream cannot be half-closed."""
+        async def keep_alive(r, w):
+            await r.readuntil(b"\r\n\r\n")
+            w.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await w.drain()
+            await r.read()   # waits until the connection is closed from our side
+            w.close()
+        srv = await asyncio.start_server(keep_alive, "127.0.0.1", 0, ssl=self.server_ctx)
+        tp = srv.sockets[0].getsockname()[1]
+        lp = free_port()
+        cfg = cfg_of(listener=[{"id": 1, "port": lp, "target": "127.0.0.1:%d" % tp, "tls": "connect", "tls_verify": False}])
+        async with Rig(cfg) as rig:
+            r, w = await asyncio.open_connection("127.0.0.1", lp)
+            w.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            self.assertTrue((await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 10)).startswith(b"HTTP/1.1 200"))
+            w.close()
+            for _ in range(100):   # far less than the 60 s linger
+                if not rig.session.channels:
+                    break
+                await asyncio.sleep(0.05)
+            self.assertEqual(rig.session.channels, {})
+        srv.close()
+
     async def test_forward_with_tls_connect(self):
         heads = []
         srv, tp = await self.tls_server(heads)
