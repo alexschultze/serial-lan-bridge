@@ -39,7 +39,7 @@ static void signal_rx(void)
  * from the wrong task: TinyUSB marks the endpoint free before its task has copied the received packets out of the
  * endpoint buffer, so a re-arm from another task in that gap overwrote them (one damaged 64-byte packet per hit, which
  * showed up as frames with a wrong CRC under load). */
-#define RX_RING_BYTES 32768
+#define RX_RING_BYTES 81920
 static StaticStreamBuffer_t rx_ring_ctl;
 static uint8_t rx_ring_store[RX_RING_BYTES + 1];
 static StreamBufferHandle_t rx_ring;
