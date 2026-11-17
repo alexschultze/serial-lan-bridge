@@ -51,6 +51,8 @@ class Session:
         self._cfg_tries = 0
         self._config_ok = False
         self.stats = {"reconnects": 0, "crc_errors": 0}
+        self.rx_bytes = 0      # payload bytes received from the node / sent to it, for the status line
+        self.tx_bytes = 0
         self._open_waiters = {}
         self.forwarder = Forwarder(cfg, self)
 
@@ -59,10 +61,16 @@ class Session:
         t = self._t
         if t is None:
             return
+        if frame.type == P.T.DATA:
+            self.tx_bytes += len(frame.payload)
         try:
             t.write(P.encode(frame))
         except LinkClosed:
             self._set_fail("link closed")
+
+    @property
+    def link_up(self):
+        return self._t is not None
 
     def expect_open(self, chan):
         fut = asyncio.get_running_loop().create_future()
@@ -230,6 +238,7 @@ class Session:
                 return
             try:
                 if t == P.T.DATA:
+                    self.rx_bytes += len(f.payload)
                     ch.on_data(f.payload)
                 elif t == P.T.CREDIT:
                     ch.on_credit(P.parse_credit(f.payload))

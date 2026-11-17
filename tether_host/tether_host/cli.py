@@ -80,7 +80,17 @@ def cmd_run(args):
                     loop.add_signal_handler(sig, session.stop)
                 except NotImplementedError:   # Windows: Ctrl+C raises KeyboardInterrupt instead
                     pass
-        await session.run_forever()
+        line = None
+        if not args.no_status_line:
+            from . import statusline
+            if statusline.usable():
+                line = asyncio.ensure_future(statusline.StatusLine(session).run())
+        try:
+            await session.run_forever()
+        finally:
+            if line is not None:
+                line.cancel()
+                await asyncio.gather(line, return_exceptions=True)
 
     try:
         asyncio.run(main())
@@ -142,6 +152,8 @@ def main(argv=None):
                             ("bootloader", cmd_bootloader, "restart the node into download mode")):
         sp = sub.add_parser(name, help=help_)
         sp.add_argument("--port", help="serial port, overrides host.port")
+        if name == "run":
+            sp.add_argument("--no-status-line", action="store_true", help="no status line at the bottom of the console")
         # also accepted after the command (`tether-host run --config x.toml`); SUPPRESS keeps a value given before it
         sp.add_argument("--config", "-c", default=argparse.SUPPRESS, help="path of tether.toml")
         sp.add_argument("--log-level", default=argparse.SUPPRESS, help="debug|info|warning|error")
