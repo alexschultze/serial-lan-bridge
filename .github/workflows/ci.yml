@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyserial
+      - name: C unit tests (ASan/UBSan)
+        run: make -C tether_node/sim test
+      - name: Python unit and end-to-end tests (including the C engine over a pty)
+        run: python -m unittest discover -s tether_host/tests -v
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install platformio
+      - name: Build tether_node for ESP32-S3
+        run: |
+          cd tether_node
+          pio run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tether_node-esp32s3
+          path: |
+            tether_node/.pio/build/esp32s3/firmware.bin
+            tether_node/.pio/build/esp32s3/bootloader.bin
+            tether_node/.pio/build/esp32s3/partitions.bin

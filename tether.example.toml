@@ -1,0 +1,69 @@
+# tether.toml template. Copy it to tether.toml and replace every <...> value; `tether_host check-config` refuses the file
+# while a placeholder is left. The file is sent to the node on every start, so editing it and restarting tether_host is all
+# it takes to change a setting. It holds Wi-Fi passwords: keep it readable only by your own account.
+
+[host]                      # settings of the PC side; never sent to the node
+port            = "auto"    # "auto" finds the node by its USB ID (1209:0001), or e.g. "COM7" / "/dev/ttyACM0"
+serial          = ""        # optional: the node's USB serial number, to choose one when several are plugged in
+log_level       = "info"    # debug | info | warning | error
+connect_timeout = 5         # seconds for connecting to a listener target
+
+[link]
+window             = 4096   # flow-control window per connection and direction, bytes (1024..16384)
+never_used_timeout = 30     # seconds; a connection that carried no data at all is reset; 0 disables
+idle_timeout       = 0      # seconds; 0 disables (recommended: the API's own keep-alive ends idle connections)
+
+[wifi]
+country = "DE"              # regulatory domain, two letters
+
+[[wifi.network]]            # 1 to 4 networks; the node joins the strongest one in range (2.4 GHz only)
+ssid   = "<Wi-Fi name>"
+psk    = "<Wi-Fi password>" # 8..63 characters; delete the line for an open network
+hidden = false
+
+# Optional fallback hotspot when no network can be joined. Off unless you remove the # in front of these lines.
+# [hotspot]
+# mode     = "auto"         # auto: only when no network can be joined; always: also while connected
+# ssid     = ""             # empty: tether-XXXX (last two bytes of the node's MAC address)
+# psk      = "<hotspot password, 8..63 characters>"
+# fallback = 30             # seconds without a network before the hotspot starts
+
+# Inbound: clients on the Wi-Fi network connect to the node; the PC connects them on to a server on its own network.
+[[listener]]                # 1 to 4 listeners (or none, if you only use forwards)
+id       = 1
+port     = 8000             # port the node opens on the Wi-Fi network
+target   = "<API host or address on the PC's network>:8000"
+protocol = "http"           # "http": clients get 502/503/504 answers on failure; "tcp": the connection is just closed
+# allow  = ["192.168.1.0/24"]   # who may connect; without this line: only the node's own subnet
+# host_header = "auto"          # http only: replace the Host header of every request with the target's name (and :port unless 80 or 443),
+#                               # or give a name. For API servers that check Host; the Wi-Fi client keeps using the node's address.
+# tls = "connect"               # the PC speaks HTTPS to the target (target port is usually 443); the Wi-Fi client stays plain HTTP
+# tls_verify = true             # check the target's certificate; false only for a target with a self-signed one
+
+# Universal inbound: the Wi-Fi client picks the destination in the URL, http://<node>:9100/https/example.com/path (or /http/<host>:<port>/).
+# [[listener]]
+# id        = 3
+# port      = 9100
+# universal = true            # no target / host_header / tls here: the URL decides; the PC connects to the destination
+
+# Outbound (optional): a port on the PC carried to an endpoint on the Wi-Fi network. Remove the # to use it.
+# [[forward]]               # 0 to 8 forwards
+# id              = 1
+# listen          = "127.0.0.1:9000"   # on the PC; a bare port number means 127.0.0.1:<port>
+# target          = "<device address or name on the Wi-Fi network>:80"
+# protocol        = "http"             # "http" or "tcp", as above
+# connect_timeout = 5                  # seconds; default host.connect_timeout
+# host_header     = "auto"             # http only: replace the Host header of every request. "auto" = the target's name
+#                                      # (and :port unless 80 or 443), or give a name. Needed for servers that check Host (Cloudflare
+#                                      # sites, FRITZ!Box DNS-rebind protection) when you browse to 127.0.0.1:<port>.
+#                                      # Responses are not changed: redirects still point to the server's own address.
+# tls             = "connect"          # the final leg to the target uses HTTPS (target port usually 443); the local program
+#                                      # stays plain HTTP, so combine with host_header = "auto" for a site by name.
+# tls_verify      = true               # check the target's certificate; false only for a self-signed one (e.g. a FRITZ!Box)
+
+# Universal outbound: http://127.0.0.1:9000/https/example.com/v1/models reaches https://example.com/v1/models through the node.
+# The node connects to ANY host and port named in the URL, so keep it on 127.0.0.1. Needs the matching firmware.
+# [[forward]]
+# id        = 4
+# listen    = "127.0.0.1:9000"
+# universal = true            # no target / host_header / tls here: the URL decides
