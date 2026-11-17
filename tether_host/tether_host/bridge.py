@@ -120,6 +120,10 @@ class Channel:
             await self._to_node()
         except asyncio.CancelledError:
             raise
+        except (ConnectionError, TimeoutError) as e:   # the peer went away: routine, not a bug
+            log.info("channel %d: connection lost: %s", self.id, e)
+            self.s.send(P.close(self.id, P.Close.RESET))
+            self.abort()
         except Exception:
             log.exception("channel %d failed", self.id)
             self.s.send(P.close(self.id, P.Close.RESET))
@@ -419,6 +423,10 @@ class OutboundChannel(Channel):
             await self._to_node()
         except asyncio.CancelledError:
             raise
+        except (ConnectionError, TimeoutError) as e:   # the peer went away: routine, not a bug
+            log.info("channel %d: connection lost: %s", self.id, e)
+            s.send(P.close(self.id, P.Close.RESET))
+            self.abort()
         except Exception:
             log.exception("channel %d failed", self.id)
             s.send(P.close(self.id, P.Close.RESET))
